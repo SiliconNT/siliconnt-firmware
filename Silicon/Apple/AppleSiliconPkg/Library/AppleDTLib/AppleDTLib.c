@@ -378,6 +378,353 @@ RETURN_STATUS AppleGetBootRamdisk(IN CONST APPLE_BOOT_INFO *Info, OUT UINT64 *Ba
     return RETURN_SUCCESS;
 }
 
+// ========== SiliconNT: what the firmware reads about the machine ==========
+//
+// See AppleDTLib.h. Everything below reads the tree it is given and nothing
+// else: no HOB, no global.
+//
+
+// Property values are aligned to 4 bytes only, hence the copy
+STATIC RETURN_STATUS ReadU32(IN dt_node_t *Node, IN CONST CHAR8 *Key, OUT UINT32 *Value)
+{
+    size_t Length = 0;
+    VOID   *Data  = dt_prop(Node, Key, &Length);
+
+    if(Data == NULL)
+    {
+        return RETURN_NOT_FOUND;
+    }
+    if(Length != sizeof(*Value))
+    {
+        return RETURN_INVALID_PARAMETER;
+    }
+    CopyMem(Value, Data, sizeof(*Value));
+    return RETURN_SUCCESS;
+}
+
+// A string property that says Text. Bytes after the terminator do not count.
+STATIC BOOLEAN PropertyIs(IN dt_node_t *Node, IN CONST CHAR8 *Key, IN CONST CHAR8 *Text)
+{
+    size_t Length     = 0;
+    VOID   *Data      = dt_prop(Node, Key, &Length);
+    UINTN  TextLength = AsciiStrLen(Text);
+
+    return Data != NULL && Length > TextLength && AsciiStrnCmp(Data, Text, TextLength + 1) == 0;
+}
+
+// One or two little-endian 32-bit cells
+STATIC UINT64 ReadCells(IN OUT CONST UINT8 **Cursor, IN UINT32 Cells)
+{
+    UINT64 Value = 0;
+
+    CopyMem(&Value, *Cursor, Cells * sizeof(UINT32));
+    *Cursor += Cells * sizeof(UINT32);
+    return Value;
+}
+
+STATIC RETURN_STATUS ReadCellCount(IN dt_node_t *Node, IN CONST CHAR8 *Key, OUT UINT32 *Cells)
+{
+    RETURN_STATUS Status = ReadU32(Node, Key, Cells);
+
+    if(!RETURN_ERROR(Status) && (*Cells < 1 || *Cells > 2))
+    {
+        return RETURN_INVALID_PARAMETER;
+    }
+    return Status;
+}
+
+//
+// /arm-io: the bus the device registers are on. An entry of "ranges" is an
+// address on the bus, the address of the same place as the CPU sees it, and a
+// length.
+//
+typedef struct
+{
+    dt_node_t   *Node;
+    CONST UINT8 *Ranges;
+    UINTN       RangeCount;
+    UINT32      BusCells;       // "#address-cells" of /arm-io
+    UINT32      CpuCells;       // "#address-cells" of the root
+    UINT32      SizeCells;      // "#size-cells" of /arm-io
+} ARM_IO;
+
+STATIC RETURN_STATUS GetArmIo(IN CONST APPLE_BOOT_INFO *Info, OUT ARM_IO *Io)
+{
+    RETURN_STATUS Status;
+    size_t        Length = 0;
+    UINTN         EntrySize;
+
+    Io->Node = dt_find(Info->DeviceTree, "/arm-io");
+    if(Io->Node == NULL)
+    {
+        return RETURN_NOT_FOUND;
+    }
+    Status = ReadCellCount(Io->Node, "#address-cells", &Io->BusCells);
+    if(RETURN_ERROR(Status))
+    {
+        return Status;
+    }
+    Status = ReadCellCount(Io->Node, "#size-cells", &Io->SizeCells);
+    if(RETURN_ERROR(Status))
+    {
+        return Status;
+    }
+    Status = ReadCellCount(Info->DeviceTree, "#address-cells", &Io->CpuCells);
+    if(RETURN_ERROR(Status))
+    {
+        return Status;
+    }
+    Io->Ranges = dt_prop(Io->Node, "ranges", &Length);
+    if(Io->Ranges == NULL)
+    {
+        return RETURN_NOT_FOUND;
+    }
+    EntrySize = (Io->BusCells + Io->CpuCells + Io->SizeCells) * sizeof(UINT32);
+    if(Length % EntrySize != 0)
+    {
+        return RETURN_INVALID_PARAMETER;
+    }
+    Io->RangeCount = Length / EntrySize;
+    return RETURN_SUCCESS;
+}
+
+STATIC VOID ReadRange(IN CONST ARM_IO *Io, IN UINTN Index, OUT UINT64 *BusAddress, OUT UINT64 *CpuAddress, OUT UINT64 *Size)
+{
+    CONST UINT8 *Cursor = Io->Ranges + Index * (Io->BusCells + Io->CpuCells + Io->SizeCells) * sizeof(UINT32);
+
+    *BusAddress = ReadCells(&Cursor, Io->BusCells);
+    *CpuAddress = ReadCells(&Cursor, Io->CpuCells);
+    *Size       = ReadCells(&Cursor, Io->SizeCells);
+}
+
+RETURN_STATUS AppleGetUartBase(IN CONST APPLE_BOOT_INFO *Info, OUT UINT64 *Base)
+{
+    ARM_IO        Io;
+    RETURN_STATUS Status;
+    dt_node_t     *Uart;
+    CONST UINT8   *Reg;
+    size_t        Length = 0;
+    UINT64        Address;
+    UINT64        Size;
+    UINT64        BusAddress;
+    UINT64        CpuAddress;
+    UINT64        RangeSize;
+    UINTN         Index;
+
+    *Base = 0;
+
+    Status = GetArmIo(Info, &Io);
+    if(RETURN_ERROR(Status))
+    {
+        return Status;
+    }
+    Uart = dt_find(Info->DeviceTree, "/arm-io/uart0");
+    if(Uart == NULL)
+    {
+        return RETURN_NOT_FOUND;
+    }
+    Reg = dt_prop(Uart, "reg", &Length);
+    if(Reg == NULL)
+    {
+        return RETURN_NOT_FOUND;
+    }
+    if(Length < (Io.BusCells + Io.SizeCells) * sizeof(UINT32))
+    {
+        return RETURN_INVALID_PARAMETER;
+    }
+    Address = ReadCells(&Reg, Io.BusCells);
+    Size    = ReadCells(&Reg, Io.SizeCells);
+
+    for(Index = 0; Index < Io.RangeCount; Index++)
+    {
+        ReadRange(&Io, Index, &BusAddress, &CpuAddress, &RangeSize);
+        // The registers lie inside this range; written so that nothing can wrap around
+        if(Address >= BusAddress && Address - BusAddress <= RangeSize && Size <= RangeSize - (Address - BusAddress))
+        {
+            Address = Address - BusAddress + CpuAddress;
+            break;
+        }
+    }
+
+    *Base = Address;
+    return RETURN_SUCCESS;
+}
+
+RETURN_STATUS AppleGetMmioSpan(IN CONST APPLE_BOOT_INFO *Info, OUT UINT64 *Base, OUT UINT64 *Size)
+{
+    ARM_IO        Io;
+    RETURN_STATUS Status;
+    UINT64        Lowest  = MAX_UINT64;
+    UINT64        Highest = 0;
+    UINT64        BusAddress;
+    UINT64        CpuAddress;
+    UINT64        RangeSize;
+    UINTN         Index;
+
+    *Base = 0;
+    *Size = 0;
+
+    Status = GetArmIo(Info, &Io);
+    if(RETURN_ERROR(Status))
+    {
+        return Status;
+    }
+    for(Index = 0; Index < Io.RangeCount; Index++)
+    {
+        ReadRange(&Io, Index, &BusAddress, &CpuAddress, &RangeSize);
+        if(RangeSize == 0)
+        {
+            continue;
+        }
+        if(RangeSize > MAX_UINT64 - CpuAddress)
+        {
+            return RETURN_INVALID_PARAMETER;
+        }
+        if(CpuAddress < Lowest)
+        {
+            Lowest = CpuAddress;
+        }
+        if(CpuAddress + RangeSize > Highest)
+        {
+            Highest = CpuAddress + RangeSize;
+        }
+    }
+    if(Highest == 0)
+    {
+        return RETURN_NOT_FOUND;
+    }
+
+    *Base = Lowest;
+    *Size = Highest - Lowest;
+    return RETURN_SUCCESS;
+}
+
+RETURN_STATUS AppleGetChipId(IN CONST APPLE_BOOT_INFO *Info, OUT UINT32 *ChipId)
+{
+    dt_node_t *Chosen = dt_find(Info->DeviceTree, "/chosen");
+
+    *ChipId = 0;
+    if(Chosen == NULL)
+    {
+        return RETURN_NOT_FOUND;
+    }
+    return ReadU32(Chosen, "chip-id", ChipId);
+}
+
+typedef struct
+{
+    APPLE_CPU     *Cpus;
+    UINTN         Count;
+    RETURN_STATUS Status;
+} CPU_WALK;
+
+// Called for /cpus (depth 0), its children (1) and whatever is below them
+static int CpuWalkNode(void *a, dt_node_t *Node, int Depth)
+{
+    CPU_WALK  *Walk = a;
+    APPLE_CPU Cpu;
+    UINT32    Reg;
+    UINTN     Index;
+
+    if(Depth != 1)
+    {
+        return 0;
+    }
+    Walk->Status = ReadU32(Node, "cpu-id", &Cpu.Number);
+    if(Walk->Status == RETURN_NOT_FOUND)
+    {
+        // Not a core
+        Walk->Status = RETURN_SUCCESS;
+        return 0;
+    }
+    if(RETURN_ERROR(Walk->Status))
+    {
+        DEBUG((DEBUG_ERROR, "AppleGetCpus: a \"cpu-id\" that is not 4 bytes long\n"));
+        return 1;
+    }
+
+    Walk->Status = RETURN_INVALID_PARAMETER;
+    if(Cpu.Number >= APPLE_MAX_CPUS)
+    {
+        DEBUG((DEBUG_ERROR, "AppleGetCpus: core %u: the highest number m1n1 takes is %u\n", Cpu.Number, APPLE_MAX_CPUS - 1));
+        return 1;
+    }
+    for(Index = 0; Index < Walk->Count; Index++)
+    {
+        if(Walk->Cpus[Index].Number == Cpu.Number)
+        {
+            DEBUG((DEBUG_ERROR, "AppleGetCpus: two cores are number %u\n", Cpu.Number));
+            return 1;
+        }
+    }
+    if(PropertyIs(Node, "cluster-type", "E"))
+    {
+        Cpu.Class = AppleCpuEfficiency;
+    }
+    else if(PropertyIs(Node, "cluster-type", "P"))
+    {
+        Cpu.Class = AppleCpuPerformance;
+    }
+    else
+    {
+        DEBUG((DEBUG_ERROR, "AppleGetCpus: core %u: \"cluster-type\" is neither \"E\" nor \"P\"\n", Cpu.Number));
+        return 1;
+    }
+    if(RETURN_ERROR(ReadU32(Node, "reg", &Reg)) || Reg > 0x7ff)
+    {
+        DEBUG((DEBUG_ERROR, "AppleGetCpus: core %u: no \"reg\" of 4 bytes, or one with a die number\n", Cpu.Number));
+        return 1;
+    }
+    if(dt_prop(Node, "state", NULL) == NULL)
+    {
+        DEBUG((DEBUG_ERROR, "AppleGetCpus: core %u: no \"state\"\n", Cpu.Number));
+        return 1;
+    }
+    Cpu.Mpidr = (Cpu.Class == AppleCpuPerformance ? BIT16 : 0) | Reg;
+    Cpu.Boot  = PropertyIs(Node, "state", "running");
+
+    Walk->Cpus[Walk->Count++] = Cpu;
+    Walk->Status              = RETURN_SUCCESS;
+    return 0;
+}
+
+RETURN_STATUS AppleGetCpus(IN CONST APPLE_BOOT_INFO *Info, OUT APPLE_CPU *Cpus, OUT UINTN *Count)
+{
+    CPU_WALK  Walk = { Cpus, 0, RETURN_SUCCESS };
+    dt_node_t *Node;
+    UINTN     Index;
+    UINTN     Running = 0;
+
+    *Count = 0;
+
+    Node = dt_find(Info->DeviceTree, "/cpus");
+    if(Node == NULL)
+    {
+        return RETURN_NOT_FOUND;
+    }
+    dt_parse(Node, 0, NULL, &CpuWalkNode, &Walk, NULL, NULL);
+    if(RETURN_ERROR(Walk.Status))
+    {
+        return Walk.Status;
+    }
+    if(Walk.Count == 0)
+    {
+        return RETURN_NOT_FOUND;
+    }
+    for(Index = 0; Index < Walk.Count; Index++)
+    {
+        Running += Cpus[Index].Boot ? 1 : 0;
+    }
+    if(Running != 1)
+    {
+        DEBUG((DEBUG_ERROR, "AppleGetCpus: %u cores are running, not one\n", (UINT32)Running));
+        return RETURN_INVALID_PARAMETER;
+    }
+
+    *Count = Walk.Count;
+    return RETURN_SUCCESS;
+}
+
 void* dt_node_prop(dt_node_t *node, const char *prop, size_t *size)
 {
     void *val = dt_prop(node, prop, size);

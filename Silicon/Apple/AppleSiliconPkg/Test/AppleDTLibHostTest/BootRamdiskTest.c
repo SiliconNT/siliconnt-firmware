@@ -8,90 +8,13 @@
   SPDX-License-Identifier: BSD-2-Clause-Patent
 **/
 
-#include <Base.h>
-#include <PiPei.h>
-#include <Library/BaseLib.h>
-#include <Library/BaseMemoryLib.h>
-#include <Library/HobLib.h>
-#include <Library/AppleDTLib.h>
-
-#include <stdio.h>
-#include <string.h>
-
-//
-// What AppleDTLib.c takes from the firmware's libraries
-//
-EFI_GUID  gAppleSiliconPkgBootInfoHobGuid;
-
-VOID *EFIAPI GetFirstGuidHob(IN CONST EFI_GUID *Guid)
-{
-    return NULL;
-}
-
-INTN EFIAPI AsciiStrCmp(IN CONST CHAR8 *First, IN CONST CHAR8 *Second)
-{
-    return strcmp(First, Second);
-}
-
-INTN EFIAPI AsciiStrnCmp(IN CONST CHAR8 *First, IN CONST CHAR8 *Second, IN UINTN Length)
-{
-    return strncmp(First, Second, Length);
-}
-
-CHAR8 *EFIAPI AsciiStrStr(IN CONST CHAR8 *String, IN CONST CHAR8 *SearchString)
-{
-    return (CHAR8 *)strstr(String, SearchString);
-}
-
-UINTN EFIAPI AsciiStrLen(IN CONST CHAR8 *String)
-{
-    return strlen(String);
-}
-
-VOID *EFIAPI CopyMem(OUT VOID *Destination, IN CONST VOID *Source, IN UINTN Length)
-{
-    return memmove(Destination, Source, Length);
-}
-
-//
-// The library itself. Included, not compiled on its own: the firmware build
-// declares the GUID above in a generated header.
-//
-#include "../../Library/AppleDTLib/AppleDTLib.c"
+#include "HostTest.h"
 
 //
 // Guest memory as the M4 had it in run R11: 0x100_17b1_8000 .. 0x103_db61_0000
 //
 #define MEM_BASE  0x10017b18000ULL
 #define MEM_TOP   0x103db610000ULL
-
-//
-// Device tree builder. A node is two counts, then its properties (32-byte
-// name, 32-bit length, value padded to 4 bytes), then its children.
-//
-STATIC UINT8  mTree[2048];
-STATIC UINTN  mUsed;
-
-STATIC VOID Node(IN UINT32 Properties, IN UINT32 Children)
-{
-    memcpy(mTree + mUsed, &Properties, 4);
-    memcpy(mTree + mUsed + 4, &Children, 4);
-    mUsed += 8;
-}
-
-STATIC VOID Prop(IN CONST CHAR8 *Key, IN CONST VOID *Value, IN UINT32 Length)
-{
-    memset(mTree + mUsed, 0, DT_KEY_LEN + 4 + ((Length + 3) & ~3U));
-    strcpy((CHAR8 *)mTree + mUsed, Key);
-    memcpy(mTree + mUsed + DT_KEY_LEN, &Length, 4);
-    memcpy(mTree + mUsed + DT_KEY_LEN + 4, Value, Length);
-    mUsed += DT_KEY_LEN + 4 + ((Length + 3) & ~3U);
-}
-
-STATIC VOID Name(IN CONST CHAR8 *Value)
-{
-    Prop("name", Value, (UINT32)strlen(Value) + 1);
-}
 
 //
 // /device-tree
@@ -127,8 +50,6 @@ STATIC VOID BuildTree(IN BOOLEAN WithMemoryMap, IN CONST VOID *Entry, IN UINT32 
         }
 }
 
-STATIC UINTN  mFailures;
-
 STATIC VOID Check(IN CONST CHAR8 *What, IN BOOLEAN WithMemoryMap, IN CONST VOID *Entry, IN UINT32 EntryLength, IN RETURN_STATUS Expected, IN UINT64 ExpectedBase, IN UINT64 ExpectedSize)
 {
     struct boot_args BootArgs;
@@ -140,8 +61,8 @@ STATIC VOID Check(IN CONST CHAR8 *What, IN BOOLEAN WithMemoryMap, IN CONST VOID 
 
     BuildTree(WithMemoryMap, Entry, EntryLength);
     if(dt_check(mTree, mUsed, NULL) != 0) {
-        printf("FAIL  %s: the test built a tree dt_check() rejects\n", What);
-        mFailures++;
+        Expect(FALSE, What);
+        printf("      the test built a tree dt_check() rejects\n");
         return;
     }
 
@@ -157,10 +78,8 @@ STATIC VOID Check(IN CONST CHAR8 *What, IN BOOLEAN WithMemoryMap, IN CONST VOID 
     if(Ok && Status == RETURN_SUCCESS) {
         Ok = Base == ExpectedBase && Size == ExpectedSize;
     }
-    printf("%s  %s\n", Ok ? "ok  " : "FAIL", What);
-    if(!Ok) {
+    if(!Expect(Ok, What)) {
         printf("      status 0x%llx base 0x%llx size 0x%llx\n", (unsigned long long)Status, (unsigned long long)Base, (unsigned long long)Size);
-        mFailures++;
     }
 }
 
@@ -196,10 +115,5 @@ int main(void)
     Check("base + size wraps around", TRUE, PAIR(0x10020000000ULL, 0xfffffffffffff000ULL), RETURN_INVALID_PARAMETER, 0, 0);
     Check("base at the end of the address space", TRUE, PAIR(0xfffffffffffff000ULL, 0x2000), RETURN_INVALID_PARAMETER, 0, 0);
 
-    if(mFailures != 0) {
-        printf("%u check(s) failed\n", (unsigned)mFailures);
-        return 1;
-    }
-    printf("all checks passed\n");
-    return 0;
+    return Verdict();
 }

@@ -130,6 +130,83 @@ typedef struct
 APPLE_BOOT_INFO* AppleGetBootInfo(VOID);
 
 //
+// SiliconNT: what the firmware needs to know about the machine it runs on. All of
+// it is read from the device tree at boot; none of it is a build-time value. The
+// functions below read Info->DeviceTree only and work before the HOB exists.
+//
+// They share these results:
+//
+// RETURN_SUCCESS            The outputs are valid.
+// RETURN_NOT_FOUND          The node or the property is not in the tree.
+// RETURN_INVALID_PARAMETER  It is there and cannot be used. Where a function
+//                           says nothing more, that is a property of the wrong
+//                           length or a number of cells other than 1 or 2.
+//
+
+//
+// One core, from a child of /cpus that has a "cpu-id" property.
+//
+typedef enum
+{
+    AppleCpuEfficiency,     // "cluster-type" is "E"
+    AppleCpuPerformance     // "cluster-type" is "P"
+} APPLE_CPU_CLASS;
+
+typedef struct
+{
+    UINT32          Number;     // "cpu-id": the number m1n1 and the EL2 layer know the core by
+    UINT64          Mpidr;      // Aff2, Aff1 and Aff0 of the core's MPIDR_EL1
+    APPLE_CPU_CLASS Class;
+    BOOLEAN         Boot;       // "state" is "running": the core the firmware runs on
+} APPLE_CPU;
+
+//
+// m1n1 has room for this many cores (MAX_CPUS, src/smp_asm.h) and ignores a core
+// with a higher number; the firmware refuses such a tree instead.
+//
+#define APPLE_MAX_CPUS 32
+
+//
+// The cores, in the order of the tree. Cpus has room for APPLE_MAX_CPUS.
+//
+// MPIDR_EL1 is not in the tree. It is put together from "reg", which holds the
+// core in bits 0-7 and the cluster in bits 8-10 (m1n1, src/smp.c, CPU_REG_CORE
+// and CPU_REG_CLUSTER), and from the class: Aff0 is the core, Aff1 the cluster,
+// Aff2 is 1 on a performance core and 0 on an efficiency core (XNU
+// xnu-12377.121.6, osfmk/arm64/proc_reg.h, "Multiprocessor Affinity Register").
+// Bits 11-14 of "reg" number the die on a chip made of several; where that
+// number shows in MPIDR_EL1 is not known here, so such a tree is refused.
+//
+// RETURN_INVALID_PARAMETER also when: a core has no "reg", "cluster-type" or
+// "state", a class other than "E" and "P", a number of APPLE_MAX_CPUS or above
+// or one another core has, a "reg" above 0x7ff; or when not exactly one core
+// is running.
+// RETURN_NOT_FOUND also when /cpus has no core.
+//
+RETURN_STATUS AppleGetCpus(IN CONST APPLE_BOOT_INFO *Info, OUT APPLE_CPU *Cpus, OUT UINTN *Count);
+
+//
+// The address of the serial port: the first "reg" entry of /arm-io/uart0, taken
+// through "ranges" of /arm-io the way m1n1 does it (an address no range covers
+// stays as it is). The EL2 layer emulates the port at this address.
+//
+RETURN_STATUS AppleGetUartBase(IN CONST APPLE_BOOT_INFO *Info, OUT UINT64 *Base);
+
+//
+// The device registers: from the lowest address of "ranges" of /arm-io to the
+// end of the highest range.
+//
+// RETURN_INVALID_PARAMETER also when a range wraps around the address space.
+// RETURN_NOT_FOUND also when "ranges" is empty.
+//
+RETURN_STATUS AppleGetMmioSpan(IN CONST APPLE_BOOT_INFO *Info, OUT UINT64 *Base, OUT UINT64 *Size);
+
+//
+// The number of the chip, "chip-id" of /chosen: 0x8132 on the M4.
+//
+RETURN_STATUS AppleGetChipId(IN CONST APPLE_BOOT_INFO *Info, OUT UINT32 *ChipId);
+
+//
 // SiliconNT: the boot disk. The loader may put a disk image into memory; it
 // then describes it in the "RAMDisk" property of /chosen/memory-map: base and
 // size, two 64-bit values, like that node's "DeviceTree" and "BootArgs".

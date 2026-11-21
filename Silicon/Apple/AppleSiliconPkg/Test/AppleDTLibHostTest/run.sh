@@ -1,6 +1,9 @@
 #!/bin/sh
-# Host test of AppleGetBootRamdisk(): compiles BootRamdiskTest.c, which includes
-# Library/AppleDTLib/AppleDTLib.c, for the host against the Mu headers of this tree.
+# Host tests of Library/AppleDTLib: compiles each test, which includes
+# Library/AppleDTLib/AppleDTLib.c through HostTest.h, for the host against the Mu
+# headers of this tree, and runs it.
+#   BootRamdiskTest.c   AppleGetBootRamdisk()
+#   MachineInfoTest.c   AppleGetCpus(), AppleGetUartBase(), AppleGetMmioSpan(), AppleGetChipId()
 # Needs: cc. Usage: ./run.sh
 set -e
 cd "$(dirname "$0")"
@@ -12,10 +15,15 @@ case "$(uname -m)" in
 esac
 out="$(mktemp)"
 trap 'rm -f "$out"' EXIT
-# MDEPKG_NDEBUG: no DebugLib. ARM_LIB_H_: skip ArmLib.h, which AppleDTLib.c includes
-# without using it and which refuses to compile for anything but ARM.
-${CC:-cc} -Wall -Werror -fshort-wchar -DMDEPKG_NDEBUG -DARM_LIB_H_ \
-  -I "$root/MU_BASECORE/MdePkg/Include" -I "$root/MU_BASECORE/MdePkg/Include/$arch" \
-  -I ../../Include \
-  BootRamdiskTest.c -o "$out"
-"$out"
+for test in BootRamdiskTest MachineInfoTest; do
+  echo "== $test"
+  # MDEPKG_NDEBUG: no DebugLib. ARM_LIB_H_: skip ArmLib.h, which AppleDTLib.c includes
+  # without using it and which refuses to compile for anything but ARM.
+  # -Wno-unused-*: HostTest.h holds more than any one test uses.
+  ${CC:-cc} -Wall -Werror -Wno-unused-function -Wno-unused-variable -Wno-unused-const-variable \
+    -fshort-wchar -DMDEPKG_NDEBUG -DARM_LIB_H_ \
+    -I "$root/MU_BASECORE/MdePkg/Include" -I "$root/MU_BASECORE/MdePkg/Include/$arch" \
+    -I ../../Include \
+    "$test.c" -o "$out"
+  "$out"
+done

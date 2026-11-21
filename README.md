@@ -1,7 +1,9 @@
 # SiliconNT firmware
 
-UEFI firmware and ACPI tables for the M4 MacBook Pro (Apple T8132), part of
-SiliconNT: booting unmodified ARM64 Windows on that machine.
+UEFI firmware and ACPI tables for Apple silicon Macs, part of SiliconNT: booting
+unmodified ARM64 Windows on those machines. One image serves every machine the
+project supports; how far each has been verified is in the SiliconNT repository
+(`docs/ROADMAP.md`).
 
 The firmware runs in EL1 on top of the SiliconNT EL2 layer (a fork of m1n1). The EL2
 layer makes the machine look like one with a standard GICv3, so this firmware is
@@ -11,12 +13,24 @@ controller. What it expects from the EL2 layer:
 | What | Value |
 |---|---|
 | GIC Distributor | `0x50_0000_0000` |
-| GIC Redistributors | `0x51_0000_0000`, `0x20000` per core |
+| GIC Redistributors | `0x51_0000_0000`; the one of core number n at `+ n × 0x20000` |
 | Timer | the virtual timer, INTID 27 |
 | PSCI | `hvc #0` (only used by `ResetSystem`) |
 | WFI | trapped by the EL2 layer |
-| Serial port | the one m1n1 emulates, at `0x3_ad20_0000` |
+| Serial port | the one m1n1 emulates, at the address of `/arm-io/uart0` in the device tree |
 | Entry | start of the image, `x0` = address of the Apple boot arguments |
+
+What differs between machines is read from the Apple device tree at boot, not built in:
+
+| What | From |
+|---|---|
+| The cores: number, MPIDR, efficiency or performance, which one is the boot core | `/cpus` |
+| Address of the serial port | `/arm-io/uart0` |
+| Range of the device registers | `ranges` of `/arm-io` |
+| Number of the chip (the OEM revision of the ACPI tables) | `chip-id` of `/chosen` |
+| Memory, framebuffer | the boot arguments |
+
+MADT, DBG2 and DSDT are built from these at boot; GTDT and FADT are the same everywhere.
 
 The design, and the evidence behind each of these, is in the SiliconNT repository
 (`docs/DESIGN.md`, `docs/findings/`).
@@ -27,7 +41,7 @@ The design, and the evidence behind each of these, is in the SiliconNT repositor
 |---|---|
 | `MU_BASECORE`, `Common/TIANO`, `Silicon/ARM/TIANO` | Microsoft's Project Mu repositories, unmodified submodules |
 | `Silicon/Apple/AppleSiliconPkg` | Code common to Apple silicon machines, taken from NTASP (see its `README.md`) |
-| `Platform/SiliconNTPkg` | The M4 MacBook Pro: build files, memory map, ACPI tables |
+| `Platform/SiliconNTPkg` | The platform: build files, memory map, ACPI tables |
 
 ## Building
 
@@ -44,9 +58,24 @@ python3 -m venv .venv
 
 The image is `Build/SiliconNT-AARCH64/DEBUG_CLANGPDB/FV/SILICONNT_EFI.fd`.
 
+## Tests
+
+Two test programs run on the build host; they need `cc`, the second one also `iasl`
+(`acpica-tools`).
+
+```
+Silicon/Apple/AppleSiliconPkg/Test/AppleDTLibHostTest/run.sh   # the device tree reader
+Platform/SiliconNTPkg/Test/AcpiTablesHostTest/run.sh           # MADT, DBG2, DSDT from a device tree
+```
+
+Each prints one line per check and ends with `all N checks passed`; the second then
+prints `all N DSDTs match the ASL compiler`.
+
 ## State
 
-It builds. It has not been run, on the machine or anywhere else.
+The firmware with static tables for the M4 MacBook Pro (commit `816ea14`) boots that
+machine to Windows Setup. Reading the machine from the device tree came after it and
+has been built and tested on the host only; it has not been run on a machine.
 
 ## Licence
 

@@ -1,0 +1,63 @@
+## @file
+#  ACPI tables as SiliconNT presents them to Windows: a machine with a standard
+#  GICv3, the virtual timer on INTID 27, PSCI over HVC.
+#
+#  GTDT and FADT are constants of this driver. MADT, DBG2 and DSDT are built at
+#  boot from what the Apple device tree says about the cores and the serial port.
+#  This driver takes the place of MdeModulePkg/Universal/Acpi/AcpiPlatformDxe,
+#  which installs tables stored in the firmware volume as they are.
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = AcpiPlatformDxe
+  FILE_GUID                      = 0d8fd270-ffd9-4198-953b-e463df411423
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = AcpiPlatformEntryPoint
+
+[Sources]
+  AcpiPlatformDxe.c
+  AcpiTableBuilder.c
+  AcpiTableBuilder.h
+  Gtdt.c
+  Fadt.c
+  StaticTables.h
+
+[Packages]
+  ArmPkg/ArmPkg.dec
+  EmbeddedPkg/EmbeddedPkg.dec
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  AppleSiliconPkg/AppleSiliconPkg.dec
+  SiliconNTPkg/SiliconNTPkg.dec
+
+[LibraryClasses]
+  ArmLib
+  BaseMemoryLib
+  DebugLib
+  MemoryAllocationLib
+  PcdLib
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+  AppleDTLib
+
+[Protocols]
+  gEfiAcpiTableProtocolGuid                     ## CONSUMES
+
+[FixedPcd]
+  gEfiMdeModulePkgTokenSpaceGuid.PcdAcpiDefaultCreatorRevision
+  gArmTokenSpaceGuid.PcdArmArchTimerSecIntrNum
+  gArmTokenSpaceGuid.PcdArmArchTimerIntrNum
+  gArmTokenSpaceGuid.PcdArmArchTimerHypIntrNum
+  gArmTokenSpaceGuid.PcdArmArchTimerVirtIntrNum
+  gArmTokenSpaceGuid.PcdGicDistributorBase
+  gArmTokenSpaceGuid.PcdGicRedistributorsBase
+
+[Pcd]
+  gEfiMdeModulePkgTokenSpaceGuid.PcdAcpiDefaultOemRevision    ## PRODUCES
+
+[Depex]
+  gEfiAcpiTableProtocolGuid

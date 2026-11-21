@@ -732,6 +732,13 @@ VOID ProcessorInfoUpdateSmbiosType4(IN UINTN MaxCpus)
 {
   EFI_SMBIOS_HANDLE SmbiosHandle;
 
+  //
+  // SiliconNT: the number of cores the device tree lists. One thread per core.
+  //
+  mProcessorInfoType4.CoreCount        = (UINT8)MaxCpus;
+  mProcessorInfoType4.EnabledCoreCount = (UINT8)MaxCpus;
+  mProcessorInfoType4.ThreadCount      = (UINT8)MaxCpus;
+
   LogSmbiosData(
       (EFI_SMBIOS_TABLE_HEADER *)&mCacheInfoType7_L1DC, mCacheInfoType7_L1DC_Strings,
       &SmbiosHandle);
@@ -813,12 +820,25 @@ SmBiosTableDxeInitialize(
     IN EFI_HANDLE ImageHandle, IN EFI_SYSTEM_TABLE *SystemTable)
 {
   EFI_STATUS Status;
+  APPLE_CPU  Cpus[APPLE_MAX_CPUS];
+  UINTN      CpuCount;
+
+  //
+  // SiliconNT: the cores are read from the device tree, like everything else
+  // about the machine. The entry code has stopped already on a tree that does
+  // not list them (MemoryInitPeiLib), so a failure here is not expected.
+  //
+  Status = AppleGetCpus(AppleGetBootInfo(), Cpus, &CpuCount);
+  if (EFI_ERROR(Status)) {
+    DEBUG((DEBUG_ERROR, "SmbiosInfoDxe: cannot read the cores from /cpus in the device tree: %r. No SMBIOS tables.\n", Status));
+    return EFI_DEVICE_ERROR;
+  }
 
   BIOSInfoUpdateSmbiosType0();
   SysInfoUpdateSmbiosType1();
   BoardInfoUpdateSmbiosType2();
   EnclosureInfoUpdateSmbiosType3();
-  ProcessorInfoUpdateSmbiosType4(PcdGet32(PcdCoreCount));
+  ProcessorInfoUpdateSmbiosType4(CpuCount);
   CacheInfoUpdateSmbiosType7();
   PhyMemArrayInfoUpdateSmbiosType16();
   MemDevInfoUpdateSmbiosType17();

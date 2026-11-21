@@ -72,6 +72,7 @@ STATIC VOID Check(IN CONST CHAR8 *What, IN BOOLEAN WithMemoryMap, IN CONST VOID 
     Info.BootArgs       = &BootArgs;
     Info.DeviceTree     = (dt_node_t *)mTree;
     Info.DeviceTreeSize = (UINT32)mUsed;
+    Info.UartBase       = 0;
 
     Status = AppleGetBootRamdisk(&Info, &Base, &Size);
     Ok     = Status == Expected;

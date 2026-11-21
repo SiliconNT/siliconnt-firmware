@@ -1,0 +1,36 @@
+# Apple UART Serial Port Library INF Description File
+# SPDX-License-Identifier: BSD-2-Clause-Patent
+#
+# SiliconNT: the flavour for DXE drivers and UEFI applications; its constructor takes
+# the address from the boot information HOB.
+# The three flavours of this library differ in how they learn the address of the
+# port; see AppleUartBase.h.
+
+[Defines]
+  INF_VERSION    = 0x00010005
+  FILE_GUID      = e27f53d5-a3a2-4db2-aaea-44045fc70f11
+  BASE_NAME      = AppleUartSerialPortLibDxe
+  MODULE_TYPE    = DXE_DRIVER
+  VERSION_STRING = 1.0
+  LIBRARY_CLASS  = SerialPortLib|DXE_DRIVER DXE_RUNTIME_DRIVER UEFI_DRIVER UEFI_APPLICATION
+  CONSTRUCTOR    = AppleUartSerialPortLibConstructor
+
+[Sources.common]
+  AppleUartSerialPortLib.c
+  AppleUartBase.h
+  DxeBase.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  ArmPkg/ArmPkg.dec
+  AppleSiliconPkg/AppleSiliconPkg.dec
+
+[LibraryClasses]
+  ArmLib
+  IoLib
+  CompilerIntrinsicsLib
+  BaseMemoryLib
+
+[Guids]
+  gEfiHobListGuid
+  gAppleSiliconPkgBootInfoHobGuid

@@ -29,8 +29,6 @@
   gAppleSiliconPkgBootInfoHobGuid = { 0x780a28a9, 0xa35f, 0x4dfd, { 0x89, 0x43, 0xe9, 0xf9, 0x80, 0x49, 0x9a, 0xa0 } }
 
 [PcdsFixedAtBuild.common]
-  gAppleSiliconPkgTokenSpaceGuid.PcdAppleUartBase|0|UINT64|0x00003900
-
   # RAM reserved for the firmware itself (128 MB)
   gAppleSiliconPkgTokenSpaceGuid.PcdSystemMemoryUefiRegionSize|0x8000000|UINT32|0x00004404
 
@@ -43,6 +41,3 @@
   # Filled in by the entry code from the boot arguments
   gAppleSiliconPkgTokenSpaceGuid.PcdFrameBufferAddress|0x0|UINT64|0x00004400
   gAppleSiliconPkgTokenSpaceGuid.PcdFrameBufferSize|0x0|UINT64|0x00004410
-
-[PcdsPatchableInModule.common, PcdsFixedAtBuild.common]
-  gAppleSiliconPkgTokenSpaceGuid.PcdCoreCount|1|UINT32|0x00004406

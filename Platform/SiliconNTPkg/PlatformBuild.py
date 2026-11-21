@@ -1,5 +1,5 @@
 # @file
-# Builds the SiliconNT firmware for the M4 MacBook Pro with stuart.
+# Builds the SiliconNT firmware with stuart.
 #
 # Derived from Platform/MacBookProEarly2023Pkg/PlatformBuild.py of
 # NT-for-ASi/apple_silicon_platforms_mu (861dcc490c56), which is itself based on

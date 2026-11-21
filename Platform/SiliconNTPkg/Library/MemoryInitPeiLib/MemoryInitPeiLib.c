@@ -15,8 +15,8 @@
  * 
  * SiliconNT: taken from NT-for-ASi/apple_silicon_platforms_mu (861dcc490c56),
  * Silicon/Apple/T602XFamilyPkg/Library/MemoryInitPeiLib. The M2 Pro device
- * ranges were replaced by the M4 MacBook Pro (T8132) ones; the "cpm-impl-reg"
- * reservation loop and its helper were removed.
+ * ranges were replaced by what the device tree of the machine says; the
+ * "cpm-impl-reg" reservation loop and its helper were removed.
  *
  **/
 
@@ -29,18 +29,21 @@
 #include <Library/MemoryAllocationLib.h>
 #include <Library/PcdLib.h>
 #include <Library/IoLib.h>
+#include <Library/AppleDTLib.h>
+#include <EmulatedGic.h>
 
 //
-// Device ranges of the M4 MacBook Pro as the firmware sees them under the EL2 layer.
+// Device ranges as the firmware sees them under the EL2 layer. None of them is a
+// build-time value of one machine:
 //
-// MMIO: the 27 "ranges" entries of the Apple device tree node /arm-io span
-// 0x2_0000_0000 .. 0x1c_c000_0000 (SiliconNT docs/findings/0017, section 1).
+// MMIO: everything from the lowest to the highest "ranges" entry of the Apple
+// device tree node /arm-io (AppleGetMmioSpan), as one range. On the M4 MacBook
+// Pro that is 0x2_0000_0000 .. 0x1c_c000_0000 (SiliconNT docs/findings/0017,
+// section 1).
 // GIC: emulated by the EL2 layer, not real hardware (SiliconNT docs/DESIGN.md).
+// The Redistributor range is as long as the highest core number of the device
+// tree asks for (EmulatedGic.h).
 //
-#define M4_MMIO_BASE              0x200000000ULL
-#define M4_MMIO_SIZE              (0x1cc0000000ULL - M4_MMIO_BASE)
-#define M4_GIC_REDIST_FRAME_SIZE  0x20000ULL
-#define M4_GIC_DIST_SIZE          0x10000ULL
 
 #define MAX_VIRTUAL_MEMORY_MAP_DESCRIPTORS 6
 
@@ -49,7 +52,7 @@
 
 VOID BuildMemoryTypeInformationHob(VOID);
 
-VOID BuildVirtualMemoryMap(OUT ARM_MEMORY_REGION_DESCRIPTOR **VirtualMemoryMap);
+EFI_STATUS BuildVirtualMemoryMap(OUT ARM_MEMORY_REGION_DESCRIPTOR **VirtualMemoryMap);
 
 STATIC VOID InitMmu(IN ARM_MEMORY_REGION_DESCRIPTOR *MemoryTable)
 {
@@ -83,10 +86,14 @@ EFI_STATUS EFIAPI MemoryPeim(IN EFI_PHYSICAL_ADDRESS UefiMemoryBase, IN UINT64 U
   EFI_PHYSICAL_ADDRESS          SystemMemoryTop;
   EFI_PHYSICAL_ADDRESS          ResourceTop;
   BOOLEAN                       Found;
+  EFI_STATUS                    Status;
 
   DEBUG((DEBUG_INFO, "%a: Building VirtualMemoryMap\n", __FUNCTION__));
   // build up virtual memory map
-  BuildVirtualMemoryMap(&MemoryTable);
+  Status = BuildVirtualMemoryMap(&MemoryTable);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
 
   // Ensure PcdSystemMemorySize has been set
   ASSERT (PcdGet64 (PcdSystemMemorySize) != 0);
@@ -231,14 +238,47 @@ EFI_STATUS EFIAPI MemoryPeim(IN EFI_PHYSICAL_ADDRESS UefiMemoryBase, IN UINT64 U
  * 
  * @param VirtualMemoryMap - A pointer to a pointer to be used for page table setup.
  * 
- * does not return anything as the value will be stored in a pointer accessible by MemoryPeim.
+ * The map is stored in a pointer accessible by MemoryPeim.
  * 
  */
-VOID BuildVirtualMemoryMap(OUT ARM_MEMORY_REGION_DESCRIPTOR **VirtualMemoryMap)
+//
+// SiliconNT: the device registers and the cores are read from the device tree. A
+// tree that does not give them is an error, which the caller (PrePi) reports and
+// stops on: there is nothing sensible to map instead.
+//
+EFI_STATUS BuildVirtualMemoryMap(OUT ARM_MEMORY_REGION_DESCRIPTOR **VirtualMemoryMap)
 {
   ARM_MEMORY_REGION_ATTRIBUTES CacheAttributes;
   UINTN Index = 0;
   ARM_MEMORY_REGION_DESCRIPTOR *VirtualMemoryTable;
+  APPLE_BOOT_INFO *BootInfo = AppleGetBootInfo();
+  APPLE_CPU Cpus[APPLE_MAX_CPUS];
+  UINTN CpuCount;
+  UINT64 MmioBase;
+  UINT64 MmioSize;
+  RETURN_STATUS Status;
+
+  Status = AppleGetMmioSpan(BootInfo, &MmioBase, &MmioSize);
+  if (RETURN_ERROR(Status)) {
+    DEBUG((DEBUG_ERROR, "%a: cannot read \"ranges\" of /arm-io in the device tree: %r\n", __FUNCTION__, Status));
+    return EFI_DEVICE_ERROR;
+  }
+
+  Status = AppleGetCpus(BootInfo, Cpus, &CpuCount);
+  if (RETURN_ERROR(Status)) {
+    DEBUG((DEBUG_ERROR, "%a: cannot read the cores from /cpus in the device tree: %r\n", __FUNCTION__, Status));
+    return EFI_DEVICE_ERROR;
+  }
+
+  DEBUG((
+    DEBUG_INFO,
+    "%a: device registers 0x%lX .. 0x%lX, %u cores, %u Redistributors\n",
+    __FUNCTION__,
+    MmioBase,
+    MmioBase + MmioSize,
+    (UINT32)CpuCount,
+    (UINT32)EmulatedGicRedistributorCount(Cpus, CpuCount)
+    ));
 
   //ensure we actually have a valid memory map pointer
   ASSERT(VirtualMemoryMap != NULL);
@@ -247,7 +287,7 @@ VOID BuildVirtualMemoryMap(OUT ARM_MEMORY_REGION_DESCRIPTOR **VirtualMemoryMap)
   VirtualMemoryTable = (ARM_MEMORY_REGION_DESCRIPTOR *)AllocatePages (EFI_SIZE_TO_PAGES (sizeof (ARM_MEMORY_REGION_DESCRIPTOR) * MAX_VIRTUAL_MEMORY_MAP_DESCRIPTORS));
   if (VirtualMemoryTable == NULL) {
     DEBUG((DEBUG_INFO, "Unexpected failure to allocate VirtualMemoryTable\n"));
-    return;
+    return EFI_OUT_OF_RESOURCES;
   }
 
   CacheAttributes = DDR_ATTRIBUTES_CACHED;
@@ -262,21 +302,21 @@ VOID BuildVirtualMemoryMap(OUT ARM_MEMORY_REGION_DESCRIPTOR **VirtualMemoryMap)
    **/
 
   // Apple device MMIO
-  VirtualMemoryTable[Index].PhysicalBase = M4_MMIO_BASE;
-  VirtualMemoryTable[Index].VirtualBase  = M4_MMIO_BASE;
-  VirtualMemoryTable[Index].Length       = M4_MMIO_SIZE;
+  VirtualMemoryTable[Index].PhysicalBase = MmioBase;
+  VirtualMemoryTable[Index].VirtualBase  = MmioBase;
+  VirtualMemoryTable[Index].Length       = MmioSize;
   VirtualMemoryTable[Index].Attributes   = ARM_MEMORY_REGION_ATTRIBUTE_DEVICE;
 
   // GIC Distributor (emulated by the EL2 layer)
   VirtualMemoryTable[++Index].PhysicalBase = FixedPcdGet64(PcdGicDistributorBase);
   VirtualMemoryTable[Index].VirtualBase    = FixedPcdGet64(PcdGicDistributorBase);
-  VirtualMemoryTable[Index].Length         = M4_GIC_DIST_SIZE;
+  VirtualMemoryTable[Index].Length         = EMULATED_GIC_DISTRIBUTOR_SIZE;
   VirtualMemoryTable[Index].Attributes     = ARM_MEMORY_REGION_ATTRIBUTE_DEVICE;
 
-  // GIC Redistributors, one frame pair per core (emulated by the EL2 layer)
+  // GIC Redistributors, one frame pair per core number (emulated by the EL2 layer)
   VirtualMemoryTable[++Index].PhysicalBase = FixedPcdGet64(PcdGicRedistributorsBase);
   VirtualMemoryTable[Index].VirtualBase    = FixedPcdGet64(PcdGicRedistributorsBase);
-  VirtualMemoryTable[Index].Length         = M4_GIC_REDIST_FRAME_SIZE * FixedPcdGet32(PcdCoreCount);
+  VirtualMemoryTable[Index].Length         = EMULATED_GIC_REDISTRIBUTOR_SIZE * EmulatedGicRedistributorCount(Cpus, CpuCount);
   VirtualMemoryTable[Index].Attributes     = ARM_MEMORY_REGION_ATTRIBUTE_DEVICE;
 
 
@@ -332,4 +372,5 @@ VOID BuildVirtualMemoryMap(OUT ARM_MEMORY_REGION_DESCRIPTOR **VirtualMemoryMap)
   ASSERT((Index + 1) <= MAX_VIRTUAL_MEMORY_MAP_DESCRIPTORS);
 
   *VirtualMemoryMap = VirtualMemoryTable;
+  return EFI_SUCCESS;
 }

@@ -1,5 +1,6 @@
 #Memory initialization PEI Library INF description file
-#SiliconNT: taken from NT-for-ASi/apple_silicon_platforms_mu (861dcc490c56), T602XFamilyPkg; adapted for the M4 MacBook Pro.
+#SiliconNT: taken from NT-for-ASi/apple_silicon_platforms_mu (861dcc490c56), T602XFamilyPkg; the device ranges and the
+#cores are read from the device tree.
 #borrowed from ArmPlatformPkg, original copyright notice below.
 
 #/** @file
@@ -28,11 +29,13 @@
   ArmPkg/ArmPkg.dec
   ArmPlatformPkg/ArmPlatformPkg.dec
   AppleSiliconPkg/AppleSiliconPkg.dec
+  SiliconNTPkg/SiliconNTPkg.dec
 
 [LibraryClasses]
   DebugLib
   HobLib
   ArmMmuLib
+  AppleDTLib
 
 [Guids]
   gEfiMemoryTypeInformationGuid
@@ -46,7 +49,6 @@
   gAppleSiliconPkgTokenSpaceGuid.PcdSystemMemoryUefiRegionSize
   gArmTokenSpaceGuid.PcdGicDistributorBase
   gArmTokenSpaceGuid.PcdGicRedistributorsBase
-  gAppleSiliconPkgTokenSpaceGuid.PcdCoreCount
 
   gEmbeddedTokenSpaceGuid.PcdMemoryTypeEfiACPIReclaimMemory
   gEmbeddedTokenSpaceGuid.PcdMemoryTypeEfiACPIMemoryNVS

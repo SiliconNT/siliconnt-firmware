@@ -12,7 +12,6 @@
 [Pcd]
   gArmTokenSpaceGuid.PcdSystemMemoryBase
   gArmTokenSpaceGuid.PcdSystemMemorySize
-  gAppleSiliconPkgTokenSpaceGuid.PcdCoreCount
   
 [Packages]
   ArmPkg/ArmPkg.dec

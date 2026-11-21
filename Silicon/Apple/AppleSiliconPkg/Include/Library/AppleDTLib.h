@@ -116,7 +116,10 @@ uint64_t dt_get_u64(const char *device, const char *prop, uint32_t idx);
 int dt_node_reg(dt_node_t *node, uint32_t idx, uint64_t *paddr, uint64_t *psize);
 
 //
-// SiliconNT: where the loader left the boot arguments and the Apple device tree.
+// SiliconNT: where the loader left the boot arguments and the Apple device tree,
+// and the address of the serial port, which the entry code reads from the device
+// tree once (AppleGetUartBase) so that the serial port library of every later
+// module finds it without reading the tree itself.
 // The entry code (PrePi) publishes this in a HOB, gAppleSiliconPkgBootInfoHobGuid;
 // AppleGetBootInfo() returns the copy in the HOB.
 //
@@ -125,6 +128,7 @@ typedef struct
     struct boot_args *BootArgs;
     dt_node_t        *DeviceTree;
     UINT32           DeviceTreeSize;
+    UINT64           UartBase;
 } APPLE_BOOT_INFO;
 
 APPLE_BOOT_INFO* AppleGetBootInfo(VOID);

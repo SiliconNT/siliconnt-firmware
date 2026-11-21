@@ -117,6 +117,7 @@ STATIC CONST APPLE_BOOT_INFO *BuiltTree(VOID)
     mInfo.BootArgs       = &mBootArgs;
     mInfo.DeviceTree     = (dt_node_t *)mTree;
     mInfo.DeviceTreeSize = (UINT32)mUsed;
+    mInfo.UartBase       = 0;
     return &mInfo;
 }
 

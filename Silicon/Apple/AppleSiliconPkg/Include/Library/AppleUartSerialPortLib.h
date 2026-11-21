@@ -18,7 +18,6 @@
 #ifndef APPLE_UART_SERIAL_PORT_H_
 #define APPLE_UART_SERIAL_PORT_H_
 
-#include <Library/PcdLib.h>
 #include <PiPei.h>
 
 //UART clock freq
@@ -70,5 +69,13 @@
 UINT32 AppleSerialPortCalculateBaudRateConfig(VOID);
 
 UINTN SerialPortFlush(VOID);
+
+//
+// SiliconNT: tells the library where the port is. Only the flavour of the
+// library for the entry code (AppleUartSerialPortLibSec.inf) has this function:
+// the entry code reads the address from the device tree (AppleGetUartBase) and
+// nothing is written to the port before it has called this.
+//
+VOID AppleUartSerialPortSetBase(IN UINT64 Base);
 
 #endif //APPLE_UART_SERIAL_PORT_H_

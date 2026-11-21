@@ -1,9 +1,13 @@
 ## @file
-#  M4 MacBook Pro (Apple T8132) firmware for SiliconNT.
+#  SiliconNT firmware: one image for every Apple silicon Mac the project supports.
 #
 #  The firmware runs in EL1 on top of the SiliconNT EL2 layer (m1n1), which emulates
 #  a standard GICv3, forwards the virtual timer as INTID 27, traps WFI and answers
 #  PSCI over HVC. See the SiliconNT repository, docs/DESIGN.md.
+#
+#  Nothing below is a value of one machine. What differs between machines (the
+#  cores, the serial port, the device registers, the number of the chip) is read
+#  from the Apple device tree at boot.
 #
 #  Library and module choices started from NT-for-ASi/apple_silicon_platforms_mu
 #  (861dcc490c56), Silicon/Apple/AppleSiliconPkg/AppleSiliconPkg.dsc.inc, with the
@@ -57,7 +61,6 @@
 
   gEfiMdeModulePkgTokenSpaceGuid.PcdAcpiDefaultOemId|"Apple "
   gEfiMdeModulePkgTokenSpaceGuid.PcdAcpiDefaultOemTableId|0x494645454c505041
-  gEfiMdeModulePkgTokenSpaceGuid.PcdAcpiDefaultOemRevision|0x00008132
   gEfiMdeModulePkgTokenSpaceGuid.PcdAcpiDefaultCreatorId|0x4C505041
   gEfiMdeModulePkgTokenSpaceGuid.PcdAcpiDefaultCreatorRevision|0x00000001
 
@@ -91,11 +94,6 @@
   gArmTokenSpaceGuid.PcdArmArchTimerVirtIntrNum|27
   # PSCI (only used by ResetSystem) goes out as hvc #0
   gArmTokenSpaceGuid.PcdMonitorConduitHvc|TRUE
-  # The serial port m1n1 emulates, at the address of /arm-io/uart0
-  gAppleSiliconPkgTokenSpaceGuid.PcdAppleUartBase|0x3ad200000
-
-  # Ten cores: 0-5 efficiency, 6-9 performance, 6 is the boot core
-  gAppleSiliconPkgTokenSpaceGuid.PcdCoreCount|10
 
   gAppleSiliconPkgTokenSpaceGuid.PcdSystemMemoryUefiRegionSize|0x8000000
 
@@ -130,6 +128,10 @@
   gEfiMdeModulePkgTokenSpaceGuid.PcdSetupConOutRow|0
   gEfiMdeModulePkgTokenSpaceGuid.PcdSetupConOutColumn|0
   gEfiMdePkgTokenSpaceGuid.PcdPlatformBootTimeOut|3
+  # The OEM revision of the ACPI tables is the number of the chip (0x8132 on the
+  # M4). AcpiPlatformDxe reads it from the device tree and sets this for the
+  # modules that build tables of their own later (the NFIT of RamDiskDxe).
+  gEfiMdeModulePkgTokenSpaceGuid.PcdAcpiDefaultOemRevision|0
 
 ################################################################################
 # Libraries
@@ -160,7 +162,9 @@
   DebugLib|MdePkg/Library/BaseDebugLibSerialPort/BaseDebugLibSerialPort.inf
   DebugPrintErrorLevelLib|MdePkg/Library/BaseDebugPrintErrorLevelLib/BaseDebugPrintErrorLevelLib.inf
   DebugAgentLib|MdeModulePkg/Library/DebugAgentLibNull/DebugAgentLibNull.inf
-  SerialPortLib|AppleSiliconPkg/Library/AppleUartSerialPortLib/AppleUartSerialPortLib.inf
+  # The address of the port comes from the device tree. The entry code and the
+  # DXE core learn it in their own ways and have their own flavours below
+  SerialPortLib|AppleSiliconPkg/Library/AppleUartSerialPortLib/AppleUartSerialPortLibDxe.inf
   ReportStatusCodeLib|MdePkg/Library/BaseReportStatusCodeLibNull/BaseReportStatusCodeLibNull.inf
   PerformanceLib|MdePkg/Library/BasePerformanceLibNull/BasePerformanceLibNull.inf
 
@@ -248,9 +252,11 @@
   ArmMmuLib|ArmPkg/Library/ArmMmuLib/ArmMmuPeiLib.inf
   MemoryInitPeiLib|SiliconNTPkg/Library/MemoryInitPeiLib/MemoryInitPeiLib.inf
   PlatformPeiLib|AppleSiliconPkg/Library/PlatformPeiLib/PlatformPeiLib.inf
+  SerialPortLib|AppleSiliconPkg/Library/AppleUartSerialPortLib/AppleUartSerialPortLibSec.inf
 
 [LibraryClasses.common.DXE_CORE]
   HobLib|MdePkg/Library/DxeCoreHobLib/DxeCoreHobLib.inf
+  SerialPortLib|AppleSiliconPkg/Library/AppleUartSerialPortLib/AppleUartSerialPortLibDxeCore.inf
   MemoryAllocationLib|MdeModulePkg/Library/DxeCoreMemoryAllocationLib/DxeCoreMemoryAllocationLib.inf
   DxeCoreEntryPoint|MdePkg/Library/DxeCoreEntryPoint/DxeCoreEntryPoint.inf
   ReportStatusCodeLib|MdeModulePkg/Library/DxeReportStatusCodeLib/DxeReportStatusCodeLib.inf
@@ -355,9 +361,9 @@
   FatPkg/EnhancedFatDxe/Fat.inf
   AppleSiliconPkg/Drivers/BootRamdiskHelperDxe/BootRamdiskHelperDxe.inf
 
-  # ACPI and SMBIOS
+  # ACPI and SMBIOS. The platform's own driver builds MADT, DBG2 and DSDT from the
+  # device tree and installs them with the GTDT and the FADT
   MdeModulePkg/Universal/Acpi/AcpiTableDxe/AcpiTableDxe.inf
-  MdeModulePkg/Universal/Acpi/AcpiPlatformDxe/AcpiPlatformDxe.inf
-  SiliconNTPkg/AcpiTables/AcpiTables.inf
+  SiliconNTPkg/Drivers/AcpiPlatformDxe/AcpiPlatformDxe.inf
   MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
   AppleSiliconPkg/Drivers/SmbiosInfoDxe/SmbiosInfoDxe.inf

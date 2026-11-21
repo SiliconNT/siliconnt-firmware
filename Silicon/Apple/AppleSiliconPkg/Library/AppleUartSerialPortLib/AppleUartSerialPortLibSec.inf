@@ -1,16 +1,22 @@
 # Apple UART Serial Port Library INF Description File
 # SPDX-License-Identifier: BSD-2-Clause-Patent
+#
+# SiliconNT: the flavour for the entry code (PrePi), which tells it the address.
+# The three flavours of this library differ in how they learn the address of the
+# port; see AppleUartBase.h.
 
 [Defines]
   INF_VERSION    = 0x00010005
-  FILE_GUID      = e27f53d5-a3a2-4db2-aaea-44045fc70f11
-  BASE_NAME      = AppleUartSerialPortLib
+  FILE_GUID      = 25d06721-38ee-46ec-933d-d6295121675f
+  BASE_NAME      = AppleUartSerialPortLibSec
   MODULE_TYPE    = BASE
   VERSION_STRING = 1.0
-  LIBRARY_CLASS  = SerialPortLib
+  LIBRARY_CLASS  = SerialPortLib|SEC
 
 [Sources.common]
   AppleUartSerialPortLib.c
+  AppleUartBase.h
+  SecBase.c
 
 [Packages]
   MdePkg/MdePkg.dec
@@ -19,10 +25,5 @@
 
 [LibraryClasses]
   ArmLib
-  PcdLib
   IoLib
-  HobLib
   CompilerIntrinsicsLib
-
-[FixedPcd]
-  gAppleSiliconPkgTokenSpaceGuid.PcdAppleUartBase

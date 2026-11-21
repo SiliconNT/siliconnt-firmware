@@ -25,7 +25,9 @@
 //
 #define EFI_ACPI_OEM_ID           {'A','p','p','l','e'}
 #define EFI_ACPI_OEM_TABLE_ID     SIGNATURE_64('A','P','P','L','E','E','F','I')
-#define EFI_ACPI_OEM_REVISION     FixedPcdGet32 (PcdAcpiDefaultOemRevision)
+// SiliconNT: the OEM revision is the number of the chip, which is read from the
+// device tree at boot. AcpiPlatformDxe puts it into every table it installs.
+#define EFI_ACPI_OEM_REVISION     0
 #define EFI_ACPI_CREATOR_ID       SIGNATURE_32('A','P','P','L')
 #define EFI_ACPI_CREATOR_REVISION FixedPcdGet32 (PcdAcpiDefaultCreatorRevision)
 

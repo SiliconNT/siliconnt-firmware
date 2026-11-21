@@ -1,5 +1,6 @@
 ## @file
-#  M4 MacBook Pro (Apple T8132) platform package for SiliconNT.
+#  Platform package of the SiliconNT firmware: one image for every machine the
+#  project supports.
 #
 #  SPDX-License-Identifier: BSD-2-Clause-Patent
 ##

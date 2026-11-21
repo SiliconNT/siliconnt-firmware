@@ -14,6 +14,11 @@
  * Copyright (c) amarioguy (Arminder Singh) 2022.
  * 
  * SPDX-License-Identifier: BSD-2-Clause-Patent
+ *
+ * SiliconNT: the address of the port is not a build-time value. It is read from
+ * the device tree at boot, and each flavour of this library learns it its own
+ * way (AppleUartBase(), see AppleUartBase.h). While a module does not know the
+ * address, nothing is written and SerialPortWrite() says so.
  */
 
 
@@ -21,14 +26,12 @@
 
 #include <Library/ArmLib.h>
 #include <Library/CacheMaintenanceLib.h>
-#include <Library/HobLib.h>
 #include <Library/SerialPortLib.h>
 #include <AArch64.h>
 #include <Library/AppleUartSerialPortLib.h>
 #include <Library/IoLib.h>
-#include <Library/PcdLib.h>
 
-#define UART_BASE FixedPcdGet64(PcdAppleUartBase)
+#include "AppleUartBase.h"
 
 /**
   Initialize the serial device hardware.
@@ -45,11 +48,16 @@
 EFI_STATUS EFIAPI SerialPortInitialize(VOID)
 {
     UINT32 BaudRateConfig = AppleSerialPortCalculateBaudRateConfig();
-    //AppleUARTBaseAddress = UART_BASE;
-    
+    UINT64 UartBase = AppleUartBase();
+
+    if(UartBase == 0)
+    {
+        return RETURN_DEVICE_ERROR;
+    }
+
     SerialPortFlush();
     //set baud rate to 115200
-    MmioWrite32((UART_BASE + UART_BAUD_RATE_CONFIG), BaudRateConfig);
+    MmioWrite32((UartBase + UART_BAUD_RATE_CONFIG), BaudRateConfig);
     
     return EFI_SUCCESS;
 }
@@ -75,15 +83,21 @@ EFI_STATUS EFIAPI SerialPortInitialize(VOID)
 UINTN EFIAPI SerialPortWrite(IN UINT8 *Buffer, IN UINTN NumberOfBytes)
 {
     UINTN NumberOfBytesToTransmit = NumberOfBytes;
+    UINT64 UartBase = AppleUartBase();
+
+    if(UartBase == 0)
+    {
+        return 0;
+    }
     //for now, operate UART port in polled mode, disable and re-enable interrupts when entering and exiting
     ArmDisableInterrupts();
     for(UINTN i = 0; i < NumberOfBytesToTransmit; i++)
     {
-        while(!(MmioRead32(UART_BASE + UART_TRANSFER_STATUS) & UART_TRANSFER_STATUS_TXBE))
+        while(!(MmioRead32(UartBase + UART_TRANSFER_STATUS) & UART_TRANSFER_STATUS_TXBE))
         {
 
         }
-        MmioWrite32((UART_BASE + UART_TX_BYTE), Buffer[i]);
+        MmioWrite32((UartBase + UART_TX_BYTE), Buffer[i]);
     }
     ArmEnableInterrupts();
     //
@@ -138,7 +152,13 @@ UINT32 AppleSerialPortCalculateBaudRateConfig(VOID)
 
 UINTN SerialPortFlush(VOID)
 {
-    while(!(MmioRead32(UART_BASE + UART_TRANSFER_STATUS) & UART_TRANSFER_STATUS_TXE))
+    UINT64 UartBase = AppleUartBase();
+
+    if(UartBase == 0)
+    {
+        return 0;
+    }
+    while(!(MmioRead32(UartBase + UART_TRANSFER_STATUS) & UART_TRANSFER_STATUS_TXE))
     {
 
     }

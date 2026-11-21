@@ -96,33 +96,48 @@ STATIC VOID ReserveBootRamdisk(IN CONST APPLE_BOOT_INFO *Info)
 
 //
 // SiliconNT: the boot arguments and the Apple device tree stay where the loader
-// put them. Reserve both and tell the DXE drivers where they are
-// (AppleGetBootInfo() in AppleDTLib reads this HOB).
+// put them. Tell everything that runs later where they are, and where the serial
+// port is (AppleGetBootInfo() in AppleDTLib reads this HOB; so do the serial port
+// libraries of the DXE phase).
 //
-STATIC VOID PublishBootInfo(IN struct boot_args *BootArgs)
+// Called before MemoryPeim(), which reads the device registers and the cores
+// from the device tree through this HOB.
+//
+STATIC VOID PublishBootInfo(IN struct boot_args *BootArgs, OUT APPLE_BOOT_INFO *Info)
 {
-    APPLE_BOOT_INFO Info;
+    Info->BootArgs       = BootArgs;
+    Info->DeviceTree     = (dt_node_t *)((UINTN)BootArgs->devtree - BootArgs->virt_base + BootArgs->phys_base);
+    Info->DeviceTreeSize = BootArgs->devtree_size;
 
-    Info.BootArgs       = BootArgs;
-    Info.DeviceTree     = (dt_node_t *)((UINTN)BootArgs->devtree - BootArgs->virt_base + BootArgs->phys_base);
-    Info.DeviceTreeSize = BootArgs->devtree_size;
+    // EarlySetup() has read the same tree for the same address, or nothing could be printed
+    if(RETURN_ERROR(AppleGetUartBase(Info, &Info->UartBase))) {
+        DEBUG((EFI_D_INFO | EFI_D_LOAD | EFI_D_ERROR, "PrePi: /arm-io/uart0 of the device tree cannot be read any more; stopping here\n"));
+        CpuDeadLoop();
+    }
 
     DEBUG(
         (EFI_D_INFO | EFI_D_LOAD,
-        "Boot arguments: 0x%p, device tree: 0x%p (size 0x%x)\n",
-        Info.BootArgs, Info.DeviceTree, Info.DeviceTreeSize));
+        "Boot arguments: 0x%p, device tree: 0x%p (size 0x%x), serial port: 0x%llx\n",
+        Info->BootArgs, Info->DeviceTree, Info->DeviceTreeSize, Info->UartBase));
 
-    BuildGuidDataHob(&gAppleSiliconPkgBootInfoHobGuid, &Info, sizeof(Info));
+    BuildGuidDataHob(&gAppleSiliconPkgBootInfoHobGuid, Info, sizeof(*Info));
+}
 
-    ReserveLoaderRange((UINTN)Info.BootArgs, sizeof(struct boot_args), EfiBootServicesData);
-    ReserveLoaderRange((UINTN)Info.DeviceTree, Info.DeviceTreeSize, EfiBootServicesData);
-    ReserveBootRamdisk(&Info);
+//
+// SiliconNT: reserve the boot arguments, the device tree and the boot disk image.
+//
+STATIC VOID ReserveLoaderRanges(IN CONST APPLE_BOOT_INFO *Info)
+{
+    ReserveLoaderRange((UINTN)Info->BootArgs, sizeof(struct boot_args), EfiBootServicesData);
+    ReserveLoaderRange((UINTN)Info->DeviceTree, Info->DeviceTreeSize, EfiBootServicesData);
+    ReserveBootRamdisk(Info);
 }
 
 VOID Main(IN VOID *StackBase, IN UINTN StackSize, IN VOID *BootArgsPtr, IN UINT64 UefiMemoryBase)
 {
     EFI_HOB_HANDOFF_INFO_TABLE  *HobList;
     EFI_STATUS Status;
+    APPLE_BOOT_INFO BootInfo;
 
     UINTN UefiMemoryLength = FixedPcdGet32(PcdSystemMemoryUefiRegionSize);
 
@@ -142,6 +157,8 @@ VOID Main(IN VOID *StackBase, IN UINTN StackSize, IN VOID *BootArgsPtr, IN UINT6
     );
 
     PrePeiSetHobList(HobList);
+
+    PublishBootInfo((struct boot_args *)BootArgsPtr, &BootInfo);
 
     //set up memory HOBs
     DEBUG((EFI_D_INFO | EFI_D_LOAD, "Invalidating data cache.\n"));
@@ -170,7 +187,7 @@ VOID Main(IN VOID *StackBase, IN UINTN StackSize, IN VOID *BootArgsPtr, IN UINT6
         CpuDeadLoop();
     }
 
-    PublishBootInfo((struct boot_args *)BootArgsPtr);
+    ReserveLoaderRanges(&BootInfo);
 
     //set up stack and CPU HOBs
     DEBUG((EFI_D_INFO | EFI_D_LOAD, "Building up Stack/CPU HOBs\n"));

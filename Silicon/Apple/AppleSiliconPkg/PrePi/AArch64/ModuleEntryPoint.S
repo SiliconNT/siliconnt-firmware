@@ -11,7 +11,6 @@ GCC_ASM_EXPORT(_ModuleEntryPoint)
 GCC_ASM_IMPORT (ArmEnableInstructionCache)
 GCC_ASM_IMPORT (ArmEnableDataCache)
 GCC_ASM_IMPORT (ArmEnableVFP)
-GCC_ASM_IMPORT(InitializeUART)
 GCC_ASM_IMPORT(UARTRelocationDebugMessage)
 
 ASM_FUNC(_ModuleEntryPoint)
@@ -46,8 +45,13 @@ ASM_FUNC(_ModuleEntryPoint)
   bl    ASM_PFX(ArmEnableVFP)
   isb
 
+  //
+  // SiliconNT: the serial port is not set up here any more. Its address is in
+  // the device tree, which EarlySetup (called by DiscoverDramFromDt, after the
+  // image has been relocated) reads; it sets the port up and prints the banner.
+  //
+
   //Use ADT to discover usable DRAM base/size
-  bl ASM_PFX(InitializeUART)
   //restore values
   mov x0, x27
   mov x1, x26

@@ -10,8 +10,11 @@
 #include <Library/DebugAgentLib.h>
 #include <Library/DebugLib.h>
 #include <Library/AppleDTLib.h>
+#include <Library/AppleUartSerialPortLib.h>
 
 #define ALIGN_UP(x, a)   (((x) + ((a) - 1)) & ~((a) - 1))
+
+UINT32 InitializeUART(VOID);
 
 //
 // SiliconNT: the boot arguments and the device tree are used where the loader
@@ -26,16 +29,28 @@ EarlySetup (
 {
 
   struct boot_args *BootArgs = (struct boot_args *)BootArgsAddr;
-  VOID *DeviceTree = (VOID *)((UINTN)BootArgs->devtree - BootArgs->virt_base + BootArgs->phys_base);
+  APPLE_BOOT_INFO  Info;
+  UINT64           UartBase;
 
-  if(dt_check(DeviceTree, BootArgs->devtree_size, NULL) != 0) {
-    //
-    // Going on would take the memory base and size from the build-time
-    // defaults, which describe no real machine.
-    //
-    DEBUG((EFI_D_INFO | EFI_D_LOAD | EFI_D_ERROR, "no ADT supplied, stopping here\n"));
+  Info.BootArgs       = BootArgs;
+  Info.DeviceTree     = (dt_node_t *)((UINTN)BootArgs->devtree - BootArgs->virt_base + BootArgs->phys_base);
+  Info.DeviceTreeSize = BootArgs->devtree_size;
+  Info.UartBase       = 0;
+
+  //
+  // SiliconNT: the address of the serial port comes from the device tree, so
+  // nothing can be printed before this point, and nothing at all if the tree is
+  // corrupt or does not name the port: the entry code then stops here without a
+  // word. Going on would take the memory base and size from the build-time
+  // defaults, which describe no real machine.
+  //
+  if(dt_check(Info.DeviceTree, Info.DeviceTreeSize, NULL) != 0 || RETURN_ERROR(AppleGetUartBase(&Info, &UartBase))) {
     CpuDeadLoop();
   }
+
+  AppleUartSerialPortSetBase(UartBase);
+  InitializeUART();
+  DEBUG((EFI_D_INFO | EFI_D_LOAD, "Serial port at 0x%llx, from /arm-io/uart0 of the device tree\n", UartBase));
 
   *SystemMemoryBase = BootArgs->phys_base;
   *SystemMemorySize = BootArgs->mem_size;

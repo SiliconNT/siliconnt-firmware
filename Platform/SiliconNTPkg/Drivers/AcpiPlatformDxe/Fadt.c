@@ -2,10 +2,12 @@
  * Copyright (c) 2023, amarioguy (AppleWOA authors).
  *
  * Module Name:
- *     Fadt.aslc
+ *     Fadt.c
  *
  * Abstract:
- *     Fixed ACPI Description Table of the M4 MacBook Pro as SiliconNT presents it.
+ *     Fixed ACPI Description Table as SiliconNT presents it. It is the same on
+ *     every machine; AcpiPlatformDxe installs a copy with the OEM revision set to
+ *     the number of the chip.
  *
  * License:
  *     SPDX-License-Identifier: BSD-2-Clause-Patent OR MIT
@@ -25,7 +27,9 @@
 #include <IndustryStandard/Acpi64.h>
 #include <Acpi/AcpiHeader.h>
 
-EFI_ACPI_6_4_FIXED_ACPI_DESCRIPTION_TABLE  Fadt = {
+#include "StaticTables.h"
+
+CONST EFI_ACPI_6_4_FIXED_ACPI_DESCRIPTION_TABLE  gStaticFadt = {
   __ACPI_HEADER (
     EFI_ACPI_6_4_FIXED_ACPI_DESCRIPTION_TABLE_SIGNATURE,
     EFI_ACPI_6_4_FIXED_ACPI_DESCRIPTION_TABLE,
@@ -87,9 +91,3 @@ EFI_ACPI_6_4_FIXED_ACPI_DESCRIPTION_TABLE  Fadt = {
   NULL_GAS,                       // SleepStatusReg
   0                               // UINT64  HypervisorVendorIdentity
 };
-
-//
-// Reference the table being generated to prevent the optimizer from removing the
-// data structure from the executable
-//
-VOID *CONST  ReferenceAcpiTable = &Fadt;

@@ -287,9 +287,9 @@ STATIC CONST TEST_MACHINE mM4MacBookPro = {
 };
 
 //
-// The same machine as the host-side loader hands it over when it starts the
-// firmware on one core: m1n1's hypervisor tooling removes the cores that are
-// not running from the tree (proxyclient/m1n1/hv/__init__.py, "if not self.smp").
+// The same machine with core 6 alone in the tree. m1n1's hypervisor tooling makes
+// such a tree when it starts a guest on one core: it removes the cores that are
+// not running (proxyclient/m1n1/hv/__init__.py, "if not self.smp").
 //
 STATIC CONST TEST_MACHINE mM4MacBookProOneCore = {
     0x8132,

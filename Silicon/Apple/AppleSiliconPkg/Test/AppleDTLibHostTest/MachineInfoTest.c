@@ -222,7 +222,7 @@ int main(void)
     // Cores
     //
     CheckCpus("M4 MacBook Pro: ten cores, numbers, MPIDR, classes, boot core 6", &mM4MacBookPro, M4Cpus, ARRAY_SIZE(M4Cpus));
-    CheckCpus("M4 MacBook Pro as the host-side loader leaves it: core 6 only", &mM4MacBookProOneCore, &M4Cpus[6], 1);
+    CheckCpus("M4 MacBook Pro with core 6 alone in the tree", &mM4MacBookProOneCore, &M4Cpus[6], 1);
     CheckCpus("eight cores, two performance clusters, boot core 2", &mOther, OtherCpus, ARRAY_SIZE(OtherCpus));
     {
         STATIC CONST TEST_CPU     Cpus[]     = { { 31, 0x7ff, "P", "running" }, { 0, 0, "E", "waiting" } };

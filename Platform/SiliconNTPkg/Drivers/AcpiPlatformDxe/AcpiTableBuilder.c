@@ -18,7 +18,9 @@
       memory address register (32 bits wide, 32-bit access), address length
       0x1000, a non-empty zero-terminated namespace string. The DSDT does not
       describe this port, so the string is ".".
-    - DSDT: the processors and nothing else: docs/DESIGN.md.
+    - DSDT: the processors and the devices Windows drivers of SiliconNT drive,
+      for now the internal disk controller: docs/DESIGN.md. What the node of
+      the disk controller holds and why: docs/findings/0062.
 
   SPDX-License-Identifier: BSD-2-Clause-Patent OR MIT
 **/
@@ -265,11 +267,31 @@ Dbg2Build (
 //     Scope (\_SB) {
 //       Device (CPU0) { Name (_HID, "ACPI0007") Name (_UID, 0) }
 //       ...
+//       Device (ANS0) {
+//         Name (_HID, "SLNT0001")
+//         Name (_UID, 0)
+//         Name (_CCA, 0)
+//         Name (_CRS, ResourceTemplate () {
+//           QWordMemory (ResourceConsumer, PosDecode, MinFixed, MaxFixed, NonCacheable,
+//                        ReadWrite, 0, <base>, <base + size - 1>, 0, <size>)     NVMe
+//           QWordMemory (...)                                                    coprocessor
+//           QWordMemory (...)                                                    SART
+//           Interrupt (ResourceConsumer, Level, ActiveHigh, Exclusive) { <GSIV> } controller
+//           Interrupt (ResourceConsumer, Level, ActiveHigh, Exclusive) { <GSIV> } mailbox
+//         })
+//         Name (_DSD, Package () {                       only with "nvme-secure-bar"
+//           ToUUID ("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
+//           Package () { Package (2) { "nvme-secure-bar", 1 } }
+//         })
+//       }
 //     }
 //   }
 //
-// written out by hand (ACPI 6.6, chapter 20, "ACPI Machine Language Specification").
-// The opcodes are in IndustryStandard/AcpiAml.h.
+// written out by hand (ACPI 6.6, chapter 20, "ACPI Machine Language Specification";
+// the resource descriptors: 6.4.3.5.1, QWORD Address Space Descriptor, and
+// 6.4.3.6, Extended Interrupt Descriptor; ToUUID: 19.6.144). The _DSD follows
+// "Device Properties UUID For _DSD", revision 2.0, 2.1. The opcodes are in
+// IndustryStandard/AcpiAml.h, the descriptors in IndustryStandard/Acpi10.h.
 //
 
 #define DSDT_REVISION  2    // 64-bit integers
@@ -279,10 +301,40 @@ STATIC CONST CHAR8  mCpuNameSuffix[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
 //
 // A core number is below this, so a _UID fits the one-byte integer form, and the
-// scope with all the devices stays far below the 4095 bytes that a PkgLength of
-// two bytes can express.
+// scope with all the devices, the disk controller's included, stays far below the
+// 4095 bytes that a PkgLength of two bytes can express.
 //
 #define CPU_NUMBER_LIMIT  (sizeof (mCpuNameSuffix) - 1)
+
+STATIC CONST CHAR8  mAnsHid[]         = DSDT_ANS_HID;
+STATIC CONST CHAR8  mSecureBarKey[]   = "nvme-secure-bar";
+
+//
+// The Device Properties UUID, daffd814-6eba-4d8c-8a91-bc9bbf4aa301, in the byte
+// order of ToUUID: the first three fields little-endian, the last two as written
+//
+STATIC CONST UINT8  mDevicePropertiesUuid[16] = {
+  0x14, 0xd8, 0xff, 0xda, 0xba, 0x6e, 0x8c, 0x4d, 0x8a, 0x91, 0xbc, 0x9b, 0xbf, 0x4a, 0xa3, 0x01
+};
+
+//
+// General flags of an address space descriptor (ACPI 6.6, table 6.45): MaxFixed,
+// MinFixed, PosDecode. Bit 0, which the table calls ignored, is what the ASL
+// compiler sets for ResourceConsumer.
+//
+#define ADDRESS_FLAG_CONSUMER   BIT0
+#define ADDRESS_FLAG_MIN_FIXED  BIT2
+#define ADDRESS_FLAG_MAX_FIXED  BIT3
+
+//
+// _CRS: three QWORD memory descriptors, two Extended Interrupt descriptors with
+// one interrupt each, the end tag. Its size fits the one-byte integer form.
+//
+#define ANS_CRS_SIZE  (3 * sizeof (EFI_ACPI_QWORD_ADDRESS_SPACE_DESCRIPTOR) +\
+                       2 * sizeof (EFI_ACPI_EXTENDED_INTERRUPT_DESCRIPTOR) +\
+                       sizeof (EFI_ACPI_END_TAG_DESCRIPTOR))
+
+STATIC_ASSERT (ANS_CRS_SIZE <= 0xFF, "_CRS of the disk controller: buffer size above one byte");
 
 //
 // A PkgLength counts its own bytes (20.2.4). Returns how many those are for a
@@ -371,12 +423,206 @@ DeviceSize (
   return 2 + PkgLengthSize (DeviceContentSize (Number)) + DeviceContentSize (Number);
 }
 
+//
+// The disk controller
+//
+
+// A Buffer or a Package with ContentSize bytes after its PkgLength: opcode, PkgLength, content
+STATIC
+UINTN
+PackageSize (
+  IN UINTN  ContentSize
+  )
+{
+  return 1 + PkgLengthSize (ContentSize) + ContentSize;
+}
+
+// Name (XXXX, ...) up to the object: NameOp, NameSeg
+#define NAME_SIZE  (1 + 4)
+
+// After the PkgLength of the Buffer of _CRS: its size as an integer, the descriptors
+#define ANS_CRS_CONTENT_SIZE  (2 + ANS_CRS_SIZE)
+
+// After the PkgLength of Package (2) { "nvme-secure-bar", 1 }: NumElements, the key, One
+#define SECURE_BAR_CONTENT_SIZE  (1 + 1 + sizeof (mSecureBarKey) + 1)
+
+// After the PkgLength of the package of properties: NumElements, the one property
+#define PROPERTIES_CONTENT_SIZE  (1 + PackageSize (SECURE_BAR_CONTENT_SIZE))
+
+// After the PkgLength of the Buffer of ToUUID: the size 16 as an integer, the 16 bytes
+#define UUID_CONTENT_SIZE  (2 + sizeof (mDevicePropertiesUuid))
+
+// After the PkgLength of the Package of _DSD: NumElements, the UUID, the properties
+#define ANS_DSD_CONTENT_SIZE  (1 + PackageSize (UUID_CONTENT_SIZE) + PackageSize (PROPERTIES_CONTENT_SIZE))
+
+// What follows the PkgLength of Device (ANS0): its name and its objects
+STATIC
+UINTN
+AnsContentSize (
+  IN CONST DSDT_ANS  *Ans
+  )
+{
+  return 4 +
+         NAME_SIZE + 1 + sizeof (mAnsHid) +
+         NAME_SIZE + IntegerSize (0) +
+         NAME_SIZE + IntegerSize (0) +
+         NAME_SIZE + PackageSize (ANS_CRS_CONTENT_SIZE) +
+         (Ans->SecureBar ? NAME_SIZE + PackageSize (ANS_DSD_CONTENT_SIZE) : 0);
+}
+
+STATIC
+UINTN
+AnsSize (
+  IN CONST DSDT_ANS  *Ans
+  )
+{
+  return 2 + PkgLengthSize (AnsContentSize (Ans)) + AnsContentSize (Ans);
+}
+
+// A range a QWORD descriptor can hold: not empty, its last byte inside the address space
+STATIC
+BOOLEAN
+DescribableRange (
+  IN CONST APPLE_MMIO_RANGE  *Range
+  )
+{
+  return Range->Size != 0 && Range->Size - 1 <= MAX_UINT64 - Range->Base;
+}
+
+STATIC
+UINT8 *
+PutName (
+  OUT UINT8        *Cursor,
+  IN  CONST CHAR8  *Name
+  )
+{
+  *Cursor++ = AML_NAME_OP;
+  CopyMem (Cursor, Name, 4);
+  return Cursor + 4;
+}
+
+// QWordMemory (ResourceConsumer, PosDecode, MinFixed, MaxFixed, NonCacheable, ReadWrite, ...)
+STATIC
+UINT8 *
+PutQWordMemory (
+  OUT UINT8                   *Cursor,
+  IN  CONST APPLE_MMIO_RANGE  *Range
+  )
+{
+  EFI_ACPI_QWORD_ADDRESS_SPACE_DESCRIPTOR  Descriptor;
+
+  ZeroMem (&Descriptor, sizeof (Descriptor));
+  Descriptor.Header.Header.Byte    = ACPI_QWORD_ADDRESS_SPACE_DESCRIPTOR;
+  Descriptor.Header.Length         = sizeof (Descriptor) - sizeof (ACPI_LARGE_RESOURCE_HEADER);
+  Descriptor.ResType               = ACPI_ADDRESS_SPACE_TYPE_MEM;
+  Descriptor.GenFlag               = ADDRESS_FLAG_CONSUMER | ADDRESS_FLAG_MIN_FIXED | ADDRESS_FLAG_MAX_FIXED;
+  Descriptor.SpecificFlag          = EFI_ACPI_MEMORY_RESOURCE_SPECIFIC_FLAG_NON_CACHEABLE | EFI_ACPI_MEMORY_RESOURCE_SPECIFIC_FLAG_READ_WRITE;
+  Descriptor.AddrSpaceGranularity  = 0;
+  Descriptor.AddrRangeMin          = Range->Base;
+  Descriptor.AddrRangeMax          = Range->Base + (Range->Size - 1);
+  Descriptor.AddrTranslationOffset = 0;
+  Descriptor.AddrLen               = Range->Size;
+
+  CopyMem (Cursor, &Descriptor, sizeof (Descriptor));
+  return Cursor + sizeof (Descriptor);
+}
+
+// Interrupt (ResourceConsumer, Level, ActiveHigh, Exclusive) { Gsiv }: the flags but the first are 0
+STATIC
+UINT8 *
+PutInterrupt (
+  OUT UINT8   *Cursor,
+  IN  UINT32  Gsiv
+  )
+{
+  EFI_ACPI_EXTENDED_INTERRUPT_DESCRIPTOR  Descriptor;
+
+  Descriptor.Header.Header.Byte   = ACPI_EXTENDED_INTERRUPT_DESCRIPTOR;
+  Descriptor.Header.Length        = sizeof (Descriptor) - sizeof (ACPI_LARGE_RESOURCE_HEADER);
+  Descriptor.InterruptVectorFlags = EFI_ACPI_EXTENDED_INTERRUPT_FLAG_PRODUCER_CONSUMER_MASK;
+  Descriptor.InterruptTableLength = 1;
+  Descriptor.InterruptNumber[0]   = Gsiv;
+
+  CopyMem (Cursor, &Descriptor, sizeof (Descriptor));
+  return Cursor + sizeof (Descriptor);
+}
+
+STATIC
+UINT8 *
+PutAns (
+  OUT UINT8           *Cursor,
+  IN  CONST DSDT_ANS  *Ans
+  )
+{
+  STATIC CONST EFI_ACPI_END_TAG_DESCRIPTOR  EndTag = { ACPI_END_TAG_DESCRIPTOR, 0 };
+
+  *Cursor++ = AML_EXT_OP;
+  *Cursor++ = AML_EXT_DEVICE_OP;
+  Cursor    = PutPkgLength (Cursor, AnsContentSize (Ans));
+  CopyMem (Cursor, "ANS0", 4);
+  Cursor += 4;
+
+  Cursor    = PutName (Cursor, "_HID");
+  *Cursor++ = AML_STRING_PREFIX;
+  CopyMem (Cursor, mAnsHid, sizeof (mAnsHid));
+  Cursor += sizeof (mAnsHid);
+
+  Cursor = PutName (Cursor, "_UID");
+  Cursor = PutInteger (Cursor, 0);
+
+  Cursor = PutName (Cursor, "_CCA");
+  Cursor = PutInteger (Cursor, 0);
+
+  Cursor    = PutName (Cursor, "_CRS");
+  *Cursor++ = AML_BUFFER_OP;
+  Cursor    = PutPkgLength (Cursor, ANS_CRS_CONTENT_SIZE);
+  Cursor    = PutInteger (Cursor, ANS_CRS_SIZE);
+  Cursor    = PutQWordMemory (Cursor, &Ans->Nvme);
+  Cursor    = PutQWordMemory (Cursor, &Ans->Coprocessor);
+  Cursor    = PutQWordMemory (Cursor, &Ans->Sart);
+  Cursor    = PutInterrupt (Cursor, Ans->NvmeGsiv);
+  Cursor    = PutInterrupt (Cursor, Ans->MailboxGsiv);
+  CopyMem (Cursor, &EndTag, sizeof (EndTag));
+  Cursor += sizeof (EndTag);
+
+  if (!Ans->SecureBar) {
+    return Cursor;
+  }
+
+  Cursor    = PutName (Cursor, "_DSD");
+  *Cursor++ = AML_PACKAGE_OP;
+  Cursor    = PutPkgLength (Cursor, ANS_DSD_CONTENT_SIZE);
+  *Cursor++ = 2;
+
+  *Cursor++ = AML_BUFFER_OP;
+  Cursor    = PutPkgLength (Cursor, UUID_CONTENT_SIZE);
+  Cursor    = PutInteger (Cursor, sizeof (mDevicePropertiesUuid));
+  CopyMem (Cursor, mDevicePropertiesUuid, sizeof (mDevicePropertiesUuid));
+  Cursor += sizeof (mDevicePropertiesUuid);
+
+  *Cursor++ = AML_PACKAGE_OP;
+  Cursor    = PutPkgLength (Cursor, PROPERTIES_CONTENT_SIZE);
+  *Cursor++ = 1;
+  *Cursor++ = AML_PACKAGE_OP;
+  Cursor    = PutPkgLength (Cursor, SECURE_BAR_CONTENT_SIZE);
+  *Cursor++ = 2;
+  *Cursor++ = AML_STRING_PREFIX;
+  CopyMem (Cursor, mSecureBarKey, sizeof (mSecureBarKey));
+  Cursor += sizeof (mSecureBarKey);
+  return PutInteger (Cursor, 1);
+}
+
+//
+// The table
+//
+
 // What follows the PkgLength of the scope: its name and the devices
 STATIC
 UINTN
 ScopeContentSize (
   IN CONST APPLE_CPU  *Cpus,
-  IN UINTN            CpuCount
+  IN UINTN            CpuCount,
+  IN CONST DSDT_ANS   *Ans
   )
 {
   UINTN  Size = 4;
@@ -386,16 +632,21 @@ ScopeContentSize (
     Size += DeviceSize (Cpus[Index].Number);
   }
 
+  if (Ans != NULL) {
+    Size += AnsSize (Ans);
+  }
+
   return Size;
 }
 
 UINTN
 DsdtSize (
   IN CONST APPLE_CPU  *Cpus,
-  IN UINTN            CpuCount
+  IN UINTN            CpuCount,
+  IN CONST DSDT_ANS   *Ans      OPTIONAL
   )
 {
-  UINTN  Content = ScopeContentSize (Cpus, CpuCount);
+  UINTN  Content = ScopeContentSize (Cpus, CpuCount, Ans);
 
   return sizeof (EFI_ACPI_DESCRIPTION_HEADER) + 1 + PkgLengthSize (Content) + Content;
 }
@@ -406,6 +657,7 @@ DsdtBuild (
   IN  UINT32                     CreatorRevision,
   IN  CONST APPLE_CPU            *Cpus,
   IN  UINTN                      CpuCount,
+  IN  CONST DSDT_ANS             *Ans      OPTIONAL,
   OUT VOID                       *Table
   )
 {
@@ -418,10 +670,16 @@ DsdtBuild (
     }
   }
 
+  if ((Ans != NULL) &&
+      !(DescribableRange (&Ans->Nvme) && DescribableRange (&Ans->Coprocessor) && DescribableRange (&Ans->Sart)))
+  {
+    return RETURN_INVALID_PARAMETER;
+  }
+
   FillHeader (
     Table,
     EFI_ACPI_6_4_DIFFERENTIATED_SYSTEM_DESCRIPTION_TABLE_SIGNATURE,
-    DsdtSize (Cpus, CpuCount),
+    DsdtSize (Cpus, CpuCount, Ans),
     DSDT_REVISION,
     mDsdtOemId,
     OemRevision,
@@ -430,7 +688,7 @@ DsdtBuild (
 
   Cursor    = (UINT8 *)Table + sizeof (EFI_ACPI_DESCRIPTION_HEADER);
   *Cursor++ = AML_SCOPE_OP;
-  Cursor    = PutPkgLength (Cursor, ScopeContentSize (Cpus, CpuCount));
+  Cursor    = PutPkgLength (Cursor, ScopeContentSize (Cpus, CpuCount, Ans));
   CopyMem (Cursor, "_SB_", 4);
   Cursor += 4;
 
@@ -455,6 +713,10 @@ DsdtBuild (
     CopyMem (Cursor, "_UID", 4);
     Cursor += 4;
     Cursor  = PutInteger (Cursor, Number);
+  }
+
+  if (Ans != NULL) {
+    PutAns (Cursor, Ans);
   }
 
   return RETURN_SUCCESS;

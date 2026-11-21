@@ -8,6 +8,10 @@
   (AcpiTableBuilder.c). The OEM revision of every table is the number of the
   chip, also from the device tree.
 
+  The DSDT also describes the internal disk controller when the device tree and
+  the table of interrupt numbers hold all a node needs (AnsNode.c). Otherwise the
+  DSDT goes without it and the log says why; the firmware boots on as before.
+
   All five tables are built before the first is installed: a device tree that
   cannot be used leaves the machine without ACPI tables and with the reason in
   the log, not with half of them.
@@ -28,6 +32,7 @@
 #include <Library/AppleDTLib.h>
 
 #include "AcpiTableBuilder.h"
+#include "AnsNode.h"
 #include "StaticTables.h"
 
 // Aff3, Aff2, Aff1 and Aff0 of MPIDR_EL1, which is what the MADT holds of it
@@ -56,6 +61,50 @@ CopyStaticTable (
   return Copy;
 }
 
+/**
+  One line about the disk controller: the node, or why there is none.
+**/
+STATIC
+VOID
+PrintAnsNode (
+  IN CONST ANS_NODE  *Ans
+  )
+{
+  switch (Ans->Outcome) {
+    case AnsNodeMade:
+      DEBUG ((
+        DEBUG_INFO,
+        "AcpiPlatformDxe: disk controller ANS0, %a: NVMe 0x%lx+0x%lx, coprocessor 0x%lx+0x%lx, SART 0x%lx+0x%lx, "
+        "controller AIC %u is GIC %u, mailbox AIC %u is GIC %u, %a\n",
+        DSDT_ANS_HID,
+        Ans->Node.Nvme.Base,
+        Ans->Node.Nvme.Size,
+        Ans->Node.Coprocessor.Base,
+        Ans->Node.Coprocessor.Size,
+        Ans->Node.Sart.Base,
+        Ans->Node.Sart.Size,
+        Ans->Device.NvmeAic,
+        Ans->Node.NvmeGsiv,
+        Ans->Device.MailboxAic,
+        Ans->Node.MailboxGsiv,
+        Ans->Node.SecureBar ? "nvme-secure-bar" : "no nvme-secure-bar"
+        ));
+      break;
+    case AnsNodeNoDevice:
+      DEBUG ((DEBUG_INFO, "AcpiPlatformDxe: no disk controller node: /arm-io/ans or /arm-io/sart-ans in the device tree cannot be read: %r\n", Ans->Status));
+      break;
+    case AnsNodeNoTable:
+      DEBUG ((DEBUG_INFO, "AcpiPlatformDxe: no disk controller node: no AIC-to-GIC table to use: %r\n", Ans->Status));
+      break;
+    case AnsNodeNvmeLineMissing:
+      DEBUG ((DEBUG_WARN, "AcpiPlatformDxe: no disk controller node: the controller's line, AIC %u, is not in the AIC-to-GIC table\n", Ans->Device.NvmeAic));
+      break;
+    case AnsNodeMailboxLineMissing:
+      DEBUG ((DEBUG_WARN, "AcpiPlatformDxe: no disk controller node: the mailbox line, AIC %u, is not in the AIC-to-GIC table\n", Ans->Device.MailboxAic));
+      break;
+  }
+}
+
 EFI_STATUS
 EFIAPI
 AcpiPlatformEntryPoint (
@@ -74,6 +123,8 @@ AcpiPlatformEntryPoint (
   UINTN                    Index;
   UINTN                    TableKey;
   UINT64                   BootMpidr;
+  ANS_NODE                 Ans;
+  CONST DSDT_ANS           *AnsInDsdt;
 
   //
   // What the device tree says about the machine
@@ -122,6 +173,10 @@ AcpiPlatformEntryPoint (
 
   DEBUG ((DEBUG_INFO, "AcpiPlatformDxe: chip 0x%x, %u cores, serial port at 0x%lx\n", ChipId, (UINT32)CpuCount, BootInfo->UartBase));
 
+  FindAnsNode (BootInfo, &Ans);
+  PrintAnsNode (&Ans);
+  AnsInDsdt = Ans.Outcome == AnsNodeMade ? &Ans.Node : NULL;
+
   //
   // Build
   //
@@ -131,7 +186,7 @@ AcpiPlatformEntryPoint (
   Tables[1] = CopyStaticTable (&gStaticGtdt.Header, ChipId);
   Tables[2] = CopyStaticTable (&gStaticFadt.Header, ChipId);
   Tables[3] = AllocatePool (Dbg2Size ());
-  Tables[4] = AllocatePool (DsdtSize (Cpus, CpuCount));
+  Tables[4] = AllocatePool (DsdtSize (Cpus, CpuCount, AnsInDsdt));
 
   Status = EFI_SUCCESS;
   for (Index = 0; Index < TABLE_COUNT; Index++) {
@@ -154,7 +209,7 @@ AcpiPlatformEntryPoint (
 
   if (!EFI_ERROR (Status)) {
     Dbg2Build (ChipId, CreatorRevision, BootInfo->UartBase, Tables[3]);
-    Status = DsdtBuild (ChipId, CreatorRevision, Cpus, CpuCount, Tables[4]);
+    Status = DsdtBuild (ChipId, CreatorRevision, Cpus, CpuCount, AnsInDsdt, Tables[4]);
   }
 
   //

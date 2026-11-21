@@ -107,13 +107,22 @@ STATIC VOID Number(IN CONST CHAR8 *Key, IN UINT32 Value)
 }
 
 //
-// The tree a test has built, as the functions under test take it
+// Guest memory for what a loader puts next to the tree: one page, which holds the
+// table of interrupt numbers when a machine has one (BuildMachine()).
+//
+STATIC UINT8 mGuestMemory[EFI_PAGE_SIZE] __attribute__((aligned(EFI_PAGE_SIZE)));
+
+//
+// The tree a test has built, as the functions under test take it. The boot
+// arguments describe mGuestMemory as the memory.
 //
 STATIC CONST APPLE_BOOT_INFO *BuiltTree(VOID)
 {
     STATIC struct boot_args mBootArgs;
     STATIC APPLE_BOOT_INFO  mInfo;
 
+    mBootArgs.phys_base  = (UINT64)(UINTN)mGuestMemory;
+    mBootArgs.mem_size   = sizeof(mGuestMemory);
     mInfo.BootArgs       = &mBootArgs;
     mInfo.DeviceTree     = (dt_node_t *)mTree;
     mInfo.DeviceTreeSize = (UINT32)mUsed;
@@ -151,13 +160,21 @@ STATIC int Verdict(VOID)
 // A machine, reduced to what the firmware reads from its tree:
 //
 // /device-tree              #address-cells 2, #size-cells 2
+//   /ans                    with a disk controller: a node of that name that
+//                           must not be taken for /arm-io/ans
 //   /chosen                 chip-id
+//     /memory-map           with a table of interrupt numbers: AICToGIC
 //   /cpus                   #address-cells 1, #size-cells 0
 //     /cpu<n> ...           cluster-type, cpu-id, state, device_type, reg
 //     /not-a-core           a child without "cpu-id", which must not be taken
 //   /arm-io                 #address-cells 2, #size-cells 2, ranges
 //     /uart1                a "reg" that must not be taken
 //     /uart0                reg
+//     /ans                  with a disk controller: nvme-interrupt-idx,
+//                           interrupt-parent, interrupts, name, reg,
+//                           nvme-secure-bar
+//       /iop-ans-nub        a "reg" that must not be taken
+//     /sart-ans             reg
 //
 typedef struct
 {
@@ -167,6 +184,29 @@ typedef struct
     CONST CHAR8 *State;         // NULL leaves the property out
 } TEST_CPU;
 
+//
+// The disk controller. Omit leaves out what its bits name.
+//
+#define OMIT_ANS                BIT0    // /arm-io/ans
+#define OMIT_ANS_REG            BIT1
+#define OMIT_ANS_INTERRUPTS     BIT2
+#define OMIT_ANS_INTERRUPT_IDX  BIT3
+#define OMIT_SART               BIT4    // /arm-io/sart-ans
+#define OMIT_SART_REG           BIT5
+
+typedef struct
+{
+    CONST UINT64 (*Reg)[2];         // address on the bus, size
+    UINT32       RegLength;         // in bytes, as are the other lengths
+    CONST UINT32 *Interrupts;
+    UINT32       InterruptsLength;
+    UINT32       NvmeInterruptIdx;
+    BOOLEAN      SecureBar;         // "nvme-secure-bar", empty, is there
+    CONST UINT64 (*SartReg)[2];
+    UINT32       SartRegLength;
+    UINT32       Omit;
+} TEST_ANS;
+
 typedef struct
 {
     UINT32         ChipId;
@@ -175,23 +215,93 @@ typedef struct
     CONST UINT64   (*Ranges)[3];    // address on the bus, address for the CPU, size
     UINTN          RangeCount;
     UINT64         UartReg[2];      // address on the bus, size
+    CONST TEST_ANS *Ans;            // NULL: no disk controller
+    CONST UINT32   *AicToGic;       // the numbers of the table; NULL: no /chosen/memory-map
+    UINT32         AicToGicCount;
 } TEST_MACHINE;
+
+//
+// The disk controller's nodes under /arm-io: ans with its child, sart-ans
+//
+STATIC VOID BuildAns(IN CONST TEST_ANS *Ans)
+{
+    STATIC CONST UINT64 NubReg[2]       = { 0x281700000ULL, 0x4000 };
+    STATIC CONST UINT32 AicPhandle      = 0xd5;
+
+    if((Ans->Omit & OMIT_ANS) == 0) {
+        Node(3 + ((Ans->Omit & OMIT_ANS_INTERRUPT_IDX) == 0 ? 1 : 0) + ((Ans->Omit & OMIT_ANS_INTERRUPTS) == 0 ? 1 : 0) +
+             ((Ans->Omit & OMIT_ANS_REG) == 0 ? 1 : 0) + (Ans->SecureBar ? 1 : 0), 1);
+        if((Ans->Omit & OMIT_ANS_INTERRUPT_IDX) == 0) {
+            Number("nvme-interrupt-idx", Ans->NvmeInterruptIdx);
+        }
+        Number("interrupt-parent", AicPhandle);
+        if((Ans->Omit & OMIT_ANS_INTERRUPTS) == 0) {
+            Prop("interrupts", Ans->InterruptsLength != 0 ? (CONST VOID *)Ans->Interrupts : "", Ans->InterruptsLength);
+        }
+        Name("ans");
+        if((Ans->Omit & OMIT_ANS_REG) == 0) {
+            Prop("reg", Ans->RegLength != 0 ? (CONST VOID *)Ans->Reg : "", Ans->RegLength);
+        }
+        if(Ans->SecureBar) {
+            Prop("nvme-secure-bar", "", 0);
+        }
+        Text("compatible", "iop,ascwrap-v6");
+          Node(2, 0);
+          Name("iop-ans-nub");
+          Prop("reg", NubReg, sizeof(NubReg));
+    }
+    if((Ans->Omit & OMIT_SART) == 0) {
+        Node(1 + ((Ans->Omit & OMIT_SART_REG) == 0 ? 1 : 0), 0);
+        Name("sart-ans");
+        if((Ans->Omit & OMIT_SART_REG) == 0) {
+            Prop("reg", Ans->SartRegLength != 0 ? (CONST VOID *)Ans->SartReg : "", Ans->SartRegLength);
+        }
+    }
+}
+
+STATIC UINT32 AnsNodeCount(IN CONST TEST_ANS *Ans)
+{
+    return Ans == NULL ? 0 : ((Ans->Omit & OMIT_ANS) == 0 ? 1 : 0) + ((Ans->Omit & OMIT_SART) == 0 ? 1 : 0);
+}
 
 STATIC VOID BuildMachine(IN CONST TEST_MACHINE *Machine)
 {
     STATIC CONST UINT64 OtherUart[2] = { 0x1ad204000ULL, 0x4000 };
+    STATIC CONST UINT64 OtherAns[2]  = { 0x2c5000000ULL, 0x60000 };
+    STATIC CONST UINT32 OtherIrqs[5] = { 1, 2, 3, 4, 5 };
     UINTN               Index;
     CHAR8               CpuName[16];
+    UINT32              *Table = (UINT32 *)mGuestMemory;
+    UINT64              Entry[2];
 
     mUsed = 0;
-    Node(3, 3);
+    Node(3, 3 + (Machine->Ans != NULL ? 1 : 0));
     Name("device-tree");
     Number("#address-cells", 2);
     Number("#size-cells", 2);
 
-      Node(2, 0);
+      if(Machine->Ans != NULL) {
+          Node(4, 0);
+          Name("ans");
+          Prop("reg", OtherAns, sizeof(OtherAns));
+          Prop("interrupts", OtherIrqs, sizeof(OtherIrqs));
+          Prop("nvme-secure-bar", "", 0);
+      }
+
+      Node(2, Machine->AicToGic != NULL ? 1 : 0);
       Name("chosen");
       Number("chip-id", Machine->ChipId);
+      if(Machine->AicToGic != NULL) {
+          // The table at the start of guest memory, as the loader writes it
+          Table[0] = APPLE_AIC_TO_GIC_VERSION;
+          Table[1] = Machine->AicToGicCount;
+          memcpy(&Table[2], Machine->AicToGic, Machine->AicToGicCount * sizeof(UINT32));
+          Entry[0] = (UINT64)(UINTN)mGuestMemory;
+          Entry[1] = 8 + 4 * (UINT64)Machine->AicToGicCount;
+          Node(2, 0);
+          Name("memory-map");
+          Prop("AICToGIC", Entry, sizeof(Entry));
+      }
 
       Node(3, (UINT32)Machine->CpuCount + 1);
       Number("#address-cells", 1);
@@ -217,7 +327,7 @@ STATIC VOID BuildMachine(IN CONST TEST_MACHINE *Machine)
         Name("not-a-core");
         Number("reg", 0x7ff);
 
-      Node(4, 2);
+      Node(4, 2 + AnsNodeCount(Machine->Ans));
       Number("#address-cells", 2);
       Name("arm-io");
       Prop("ranges", Machine->RangeCount != 0 ? (CONST VOID *)Machine->Ranges : "", (UINT32)(Machine->RangeCount * sizeof(Machine->Ranges[0])));
@@ -228,6 +338,9 @@ STATIC VOID BuildMachine(IN CONST TEST_MACHINE *Machine)
         Node(2, 0);
         Prop("reg", Machine->UartReg, sizeof(Machine->UartReg));
         Name("uart0");
+        if(Machine->Ans != NULL) {
+            BuildAns(Machine->Ans);
+        }
 }
 
 //
@@ -296,6 +409,80 @@ STATIC CONST TEST_MACHINE mM4MacBookProOneCore = {
     &mCpusOfM4MacBookPro[6], 1,
     mRangesOfM4MacBookPro, ARRAY_SIZE(mRangesOfM4MacBookPro),
     { 0x1ad200000ULL, 0x4000 }
+};
+
+//
+// The disk controller of the M4 MacBook Pro, from the same device tree: "reg" of
+// /arm-io/ans (13 entries) and of /arm-io/sart-ans (3), as addresses on the bus;
+// "interrupts", AIC 1004, 1003, 1006, 1005 (the mailbox) and 1018; the
+// controller's line is number 4; "nvme-secure-bar" is there.
+//
+STATIC CONST UINT64 mAnsRegOfM4MacBookPro[][2] = {
+    { 0x281600000ULL, 0x88000 }, { 0x281050000ULL, 0x4000 }, { 0x0ULL, 0x0 }, { 0x285cc0000ULL, 0x60000 },
+    { 0x283000000ULL, 0x1000000 }, { 0x285b90000ULL, 0xc000 }, { 0x285d47c00ULL, 0x4000 }, { 0x285d60000ULL, 0x8000 },
+    { 0x285d70000ULL, 0x8000 }, { 0x2c5cc0000ULL, 0x10000 }, { 0x285c00000ULL, 0x4000 }, { 0x285c20000ULL, 0x4000 },
+    { 0x285b00000ULL, 0x30000 },
+};
+
+STATIC CONST UINT64 mSartRegOfM4MacBookPro[][2] = {
+    { 0x285c50000ULL, 0xc000 }, { 0x285d44000ULL, 0x4000 }, { 0x285cc0000ULL, 0x4000 },
+};
+
+STATIC CONST UINT32 mAnsInterruptsOfM4MacBookPro[] = { 1004, 1003, 1006, 1005, 1018 };
+
+STATIC CONST TEST_ANS mAnsOfM4MacBookPro = {
+    mAnsRegOfM4MacBookPro, sizeof(mAnsRegOfM4MacBookPro),
+    mAnsInterruptsOfM4MacBookPro, sizeof(mAnsInterruptsOfM4MacBookPro),
+    4, TRUE,
+    mSartRegOfM4MacBookPro, sizeof(mSartRegOfM4MacBookPro),
+    0
+};
+
+//
+// The table of interrupt numbers m1n1 makes from that tree (src/hv/hv_layout.c,
+// hv_aicmap() of SiliconNT/m1n1 622c9313): every value of "interrupts" that goes
+// to the AIC, sorted, each once. 397 numbers, 0 the first and 1505 the last, as
+// the firmware printed in run R33. AIC 1006 is GIC 257, AIC 1018 is GIC 258.
+//
+STATIC CONST UINT32 mAicToGicOfM4MacBookPro[] = {
+    0, 22, 23, 77, 88, 91, 94, 97, 100, 103, 116, 119, 122, 125, 133, 134,
+    135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 215, 256, 257, 266, 268,
+    277, 301, 303, 304, 305, 306, 307, 308, 309, 316, 320, 322, 324, 327, 330, 333,
+    336, 339, 342, 345, 352, 369, 370, 371, 372, 382, 387, 389, 390, 391, 392, 393,
+    396, 397, 398, 399, 400, 401, 402, 403, 404, 405, 407, 423, 424, 425, 426, 427,
+    428, 429, 433, 434, 435, 436, 457, 461, 465, 475, 478, 496, 499, 500, 501, 502,
+    503, 504, 505, 507, 513, 518, 520, 522, 552, 553, 554, 555, 556, 557, 558, 561,
+    562, 563, 564, 566, 567, 568, 569, 570, 571, 572, 573, 574, 575, 576, 577, 578,
+    579, 580, 581, 582, 583, 584, 585, 586, 587, 588, 589, 590, 591, 592, 593, 594,
+    595, 596, 597, 604, 612, 629, 630, 642, 653, 654, 655, 656, 667, 669, 670, 671,
+    672, 676, 677, 678, 681, 688, 731, 732, 733, 734, 739, 741, 743, 744, 748, 749,
+    750, 760, 803, 804, 805, 806, 813, 815, 817, 818, 822, 823, 824, 834, 877, 878,
+    879, 880, 881, 892, 893, 894, 895, 932, 945, 948, 949, 955, 963, 964, 965, 966,
+    967, 970, 975, 976, 977, 978, 990, 992, 993, 994, 995, 996, 997, 999, 1003, 1004,
+    1005, 1006, 1018, 1019, 1020, 1022, 1023, 1040, 1041, 1042, 1046, 1056, 1058, 1060, 1061, 1062,
+    1063, 1064, 1065, 1066, 1071, 1072, 1074, 1078, 1079, 1080, 1081, 1083, 1091, 1093, 1113, 1114,
+    1115, 1116, 1146, 1147, 1184, 1231, 1232, 1233, 1240, 1249, 1250, 1251, 1267, 1268, 1269, 1270,
+    1271, 1272, 1273, 1279, 1280, 1281, 1282, 1283, 1287, 1288, 1289, 1290, 1291, 1292, 1293, 1294,
+    1295, 1296, 1297, 1298, 1299, 1300, 1301, 1302, 1303, 1304, 1305, 1306, 1307, 1308, 1309, 1310,
+    1311, 1312, 1314, 1316, 1317, 1318, 1319, 1329, 1330, 1331, 1332, 1333, 1334, 1335, 1341, 1342,
+    1343, 1344, 1345, 1349, 1350, 1351, 1352, 1353, 1354, 1355, 1356, 1357, 1358, 1359, 1360, 1361,
+    1362, 1363, 1364, 1365, 1366, 1367, 1368, 1369, 1370, 1371, 1372, 1373, 1374, 1376, 1378, 1379,
+    1380, 1381, 1453, 1454, 1455, 1456, 1457, 1458, 1459, 1465, 1466, 1467, 1468, 1469, 1473, 1474,
+    1475, 1476, 1477, 1478, 1479, 1480, 1481, 1482, 1483, 1484, 1485, 1486, 1487, 1488, 1489, 1490,
+    1491, 1492, 1493, 1494, 1495, 1496, 1497, 1498, 1500, 1502, 1503, 1504, 1505,
+};
+
+//
+// The M4 MacBook Pro as m1n1 hands it to the firmware: its tree with the disk
+// controller, and the table of interrupt numbers
+//
+STATIC CONST TEST_MACHINE mM4MacBookProWithAns = {
+    0x8132,
+    mCpusOfM4MacBookPro, ARRAY_SIZE(mCpusOfM4MacBookPro),
+    mRangesOfM4MacBookPro, ARRAY_SIZE(mRangesOfM4MacBookPro),
+    { 0x1ad200000ULL, 0x4000 },
+    &mAnsOfM4MacBookPro,
+    mAicToGicOfM4MacBookPro, ARRAY_SIZE(mAicToGicOfM4MacBookPro)
 };
 
 #endif // APPLE_DT_HOST_TEST_H_

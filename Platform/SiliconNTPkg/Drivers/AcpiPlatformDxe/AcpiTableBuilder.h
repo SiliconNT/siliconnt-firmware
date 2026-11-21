@@ -67,18 +67,45 @@ Dbg2Build (
   );
 
 /**
-  Differentiated System Description Table: a processor device for each core and
-  nothing else, in the order of Cpus. The _UID of a device is the number of the
-  core; its name is "CPU" and one character for the number, 0-9 then A-Z.
+  The internal disk controller as the DSDT describes it: three register ranges,
+  in this order in _CRS, and two GIC interrupt numbers (GSIVs), controller's
+  first. SecureBar puts a _DSD with the property "nvme-secure-bar" into the
+  node. AnsNode.h says where the values come from.
+**/
+typedef struct {
+  APPLE_MMIO_RANGE    Nvme;
+  APPLE_MMIO_RANGE    Coprocessor;
+  APPLE_MMIO_RANGE    Sart;
+  UINT32              NvmeGsiv;
+  UINT32              MailboxGsiv;
+  BOOLEAN             SecureBar;
+} DSDT_ANS;
 
-  @retval RETURN_SUCCESS            Table holds DsdtSize (Cpus, CpuCount) bytes.
+//
+// The hardware ID of the disk controller. SLNT is SiliconNT's own prefix and is
+// not registered with the UEFI Forum; SiliconNT docs/findings/0062.
+//
+#define DSDT_ANS_HID  "SLNT0001"
+
+/**
+  Differentiated System Description Table: a processor device for each core, in
+  the order of Cpus, then the disk controller if Ans is not NULL. The _UID of a
+  processor device is the number of the core; its name is "CPU" and one character
+  for the number, 0-9 then A-Z. The disk controller is ANS0, _HID DSDT_ANS_HID.
+
+  With Ans NULL the table is the one the firmware built before it knew of the
+  disk controller, byte for byte.
+
+  @retval RETURN_SUCCESS            Table holds DsdtSize (Cpus, CpuCount, Ans) bytes.
   @retval RETURN_INVALID_PARAMETER  A core number is 36 or above: there is no
-                                    name for it.
+                                    name for it. Or a register range of Ans is
+                                    empty or reaches beyond the address space.
 **/
 UINTN
 DsdtSize (
   IN CONST APPLE_CPU  *Cpus,
-  IN UINTN            CpuCount
+  IN UINTN            CpuCount,
+  IN CONST DSDT_ANS   *Ans      OPTIONAL
   );
 
 RETURN_STATUS
@@ -87,6 +114,7 @@ DsdtBuild (
   IN  UINT32                     CreatorRevision,
   IN  CONST APPLE_CPU            *Cpus,
   IN  UINTN                      CpuCount,
+  IN  CONST DSDT_ANS             *Ans      OPTIONAL,
   OUT VOID                       *Table
   );
 

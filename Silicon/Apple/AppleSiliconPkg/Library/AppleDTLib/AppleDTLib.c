@@ -598,19 +598,61 @@ STATIC VOID ReadRange(IN CONST ARM_IO *Io, IN UINTN Index, OUT UINT64 *BusAddres
     *Size       = ReadCells(&Cursor, Io->SizeCells);
 }
 
+//
+// Entry number Entry of "reg" of a child of /arm-io, its address taken through "ranges"
+// the way m1n1 does it: into the first range that holds all of the entry; an
+// address no range holds stays as it is. RETURN_NOT_FOUND without "reg",
+// RETURN_INVALID_PARAMETER when "reg" is too short to hold that entry. *Base and
+// *Size are 0 unless RETURN_SUCCESS.
+//
+STATIC RETURN_STATUS ReadArmIoReg(IN CONST ARM_IO *Io, IN dt_node_t *Node, IN UINTN Entry, OUT UINT64 *Base, OUT UINT64 *Size)
+{
+    CONST UINT8 *Reg;
+    size_t      Length = 0;
+    UINTN       EntrySize = (Io->BusCells + Io->SizeCells) * sizeof(UINT32);
+    UINT64      Address;
+    UINT64      BusAddress;
+    UINT64      CpuAddress;
+    UINT64      RangeSize;
+    UINTN       Index;
+
+    *Base = 0;
+    *Size = 0;
+
+    Reg = dt_prop(Node, "reg", &Length);
+    if(Reg == NULL)
+    {
+        return RETURN_NOT_FOUND;
+    }
+    if(Length < (Entry + 1) * EntrySize)
+    {
+        return RETURN_INVALID_PARAMETER;
+    }
+    Reg    += Entry * EntrySize;
+    Address = ReadCells(&Reg, Io->BusCells);
+    *Size   = ReadCells(&Reg, Io->SizeCells);
+
+    for(Index = 0; Index < Io->RangeCount; Index++)
+    {
+        ReadRange(Io, Index, &BusAddress, &CpuAddress, &RangeSize);
+        // The registers lie inside this range; written so that nothing can wrap around
+        if(Address >= BusAddress && Address - BusAddress <= RangeSize && *Size <= RangeSize - (Address - BusAddress))
+        {
+            Address = Address - BusAddress + CpuAddress;
+            break;
+        }
+    }
+
+    *Base = Address;
+    return RETURN_SUCCESS;
+}
+
 RETURN_STATUS AppleGetUartBase(IN CONST APPLE_BOOT_INFO *Info, OUT UINT64 *Base)
 {
     ARM_IO        Io;
     RETURN_STATUS Status;
     dt_node_t     *Uart;
-    CONST UINT8   *Reg;
-    size_t        Length = 0;
-    UINT64        Address;
     UINT64        Size;
-    UINT64        BusAddress;
-    UINT64        CpuAddress;
-    UINT64        RangeSize;
-    UINTN         Index;
 
     *Base = 0;
 
@@ -624,30 +666,90 @@ RETURN_STATUS AppleGetUartBase(IN CONST APPLE_BOOT_INFO *Info, OUT UINT64 *Base)
     {
         return RETURN_NOT_FOUND;
     }
-    Reg = dt_prop(Uart, "reg", &Length);
-    if(Reg == NULL)
+    return ReadArmIoReg(&Io, Uart, 0, Base, &Size);
+}
+
+// A range ACPI can describe: not empty, its last byte inside the address space
+STATIC BOOLEAN UsableRange(IN CONST APPLE_MMIO_RANGE *Range)
+{
+    return Range->Size != 0 && Range->Size - 1 <= MAX_UINT64 - Range->Base;
+}
+
+RETURN_STATUS AppleGetAns(IN CONST APPLE_BOOT_INFO *Info, OUT APPLE_ANS *Ans)
+{
+    ARM_IO        Io;
+    RETURN_STATUS Status;
+    dt_node_t     *Node;
+    dt_node_t     *Sart;
+    APPLE_ANS     Found;
+    UINT64        Unused;
+    CONST UINT8   *Interrupts;
+    size_t        Length = 0;
+    UINT32        NvmeIndex;
+
+    ZeroMem(Ans, sizeof(*Ans));
+    ZeroMem(&Found, sizeof(Found));
+
+    Status = GetArmIo(Info, &Io);
+    if(RETURN_ERROR(Status))
+    {
+        return Status;
+    }
+    Node = dt_find(Info->DeviceTree, "/arm-io/ans");
+    Sart = dt_find(Info->DeviceTree, "/arm-io/sart-ans");
+    if(Node == NULL || Sart == NULL)
     {
         return RETURN_NOT_FOUND;
     }
-    if(Length < (Io.BusCells + Io.SizeCells) * sizeof(UINT32))
+
+    //
+    // Registers. The NVMe window: start of entry 9 or 3, length of entry 3.
+    //
+    Found.SecureBar = dt_prop(Node, "nvme-secure-bar", NULL) != NULL;
+    Status = ReadArmIoReg(&Io, Node, Found.SecureBar ? 9 : 3, &Found.Nvme.Base, &Unused);
+    if(!RETURN_ERROR(Status))
+    {
+        Status = ReadArmIoReg(&Io, Node, 3, &Unused, &Found.Nvme.Size);
+    }
+    if(!RETURN_ERROR(Status))
+    {
+        Status = ReadArmIoReg(&Io, Node, 0, &Found.Coprocessor.Base, &Found.Coprocessor.Size);
+    }
+    if(!RETURN_ERROR(Status))
+    {
+        Status = ReadArmIoReg(&Io, Sart, 0, &Found.Sart.Base, &Found.Sart.Size);
+    }
+    if(RETURN_ERROR(Status))
+    {
+        return Status;
+    }
+    if(!UsableRange(&Found.Nvme) || !UsableRange(&Found.Coprocessor) || !UsableRange(&Found.Sart))
     {
         return RETURN_INVALID_PARAMETER;
     }
-    Address = ReadCells(&Reg, Io.BusCells);
-    Size    = ReadCells(&Reg, Io.SizeCells);
 
-    for(Index = 0; Index < Io.RangeCount; Index++)
+    //
+    // Interrupts: the mailbox lines first, the controller's after them
+    //
+    Status = ReadU32(Node, "nvme-interrupt-idx", &NvmeIndex);
+    if(RETURN_ERROR(Status))
     {
-        ReadRange(&Io, Index, &BusAddress, &CpuAddress, &RangeSize);
-        // The registers lie inside this range; written so that nothing can wrap around
-        if(Address >= BusAddress && Address - BusAddress <= RangeSize && Size <= RangeSize - (Address - BusAddress))
-        {
-            Address = Address - BusAddress + CpuAddress;
-            break;
-        }
+        return Status;
     }
+    Interrupts = dt_prop(Node, "interrupts", &Length);
+    if(Interrupts == NULL)
+    {
+        return RETURN_NOT_FOUND;
+    }
+    if(Length % sizeof(UINT32) != 0 || NvmeIndex < APPLE_ANS_MAILBOX_LINES || NvmeIndex >= Length / sizeof(UINT32))
+    {
+        return RETURN_INVALID_PARAMETER;
+    }
+    // Property values are aligned to 4 bytes only, hence the copies
+    CopyMem(&Found.NvmeAic, Interrupts + NvmeIndex * sizeof(UINT32), sizeof(UINT32));
+    CopyMem(&Found.MailboxAic, Interrupts + APPLE_ANS_MAILBOX_RECEIVE * sizeof(UINT32), sizeof(UINT32));
 
-    *Base = Address;
+    *Ans = Found;
     return RETURN_SUCCESS;
 }
 

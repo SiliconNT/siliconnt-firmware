@@ -291,4 +291,59 @@ RETURN_STATUS AppleGetAicToGic(IN CONST APPLE_BOOT_INFO *Info, OUT APPLE_AIC_TO_
 //
 RETURN_STATUS AppleFindGicInterrupt(IN CONST APPLE_AIC_TO_GIC *Table, IN UINT32 Aic, OUT UINT32 *Gic);
 
+//
+// SiliconNT: the internal disk controller (ANS), the node /arm-io/ans, and the
+// SART that filters its DMA, /arm-io/sart-ans (the paths m1n1 takes, src/nvme.c).
+// What a driver of the controller has to be told: three register ranges and two
+// interrupt lines.
+//
+// The registers, each taken through "ranges" of /arm-io like AppleGetUartBase():
+//   Nvme         The NVMe and NVMMU registers. With "nvme-secure-bar" (M4) the
+//                window starts where "reg" entry 9 does, without it where entry 3
+//                does; it is as long as entry 3 either way. Entry 9 says 0x10000,
+//                which does not reach all the registers a driver uses; entry 3
+//                says 0x60000, as much as Linux describes on the M4.
+//   Coprocessor  The coprocessor's control registers and its mailbox: "reg"
+//                entry 0.
+//   Sart         "reg" entry 0 of /arm-io/sart-ans.
+//
+// The interrupts, AIC numbers from "interrupts" of /arm-io/ans:
+//   NvmeAic      The controller's line: the entry "nvme-interrupt-idx" names.
+//   MailboxAic   The mailbox line "a message has come in": entry 2. In every
+//                coprocessor node of the M4's tree the four mailbox lines come
+//                first, as n+1, n, n+3, n+2; Linux calls n+3 "recv-not-empty".
+//
+typedef struct
+{
+    UINT64 Base;
+    UINT64 Size;
+} APPLE_MMIO_RANGE;
+
+typedef struct
+{
+    APPLE_MMIO_RANGE Nvme;
+    APPLE_MMIO_RANGE Coprocessor;
+    APPLE_MMIO_RANGE Sart;
+    UINT32           NvmeAic;
+    UINT32           MailboxAic;
+    BOOLEAN          SecureBar;     // "nvme-secure-bar" is there
+} APPLE_ANS;
+
+#define APPLE_ANS_MAILBOX_LINES    4   // the first values of "interrupts"
+#define APPLE_ANS_MAILBOX_RECEIVE  2   // the one of "a message has come in"
+
+//
+// Reads the controller. With any status but RETURN_SUCCESS, *Ans is all 0 and
+// no disk controller is described.
+//
+// RETURN_NOT_FOUND also when there is no /arm-io/ans or no /arm-io/sart-ans,
+// when one of them has no "reg", or /arm-io/ans has no "interrupts" or no
+// "nvme-interrupt-idx".
+// RETURN_INVALID_PARAMETER also when a "reg" has no entry where one is read, an
+// entry read is of size 0 or wraps around the address space, "interrupts" is not
+// a whole number of 32-bit values, or "nvme-interrupt-idx" names a mailbox line
+// or a value past the last.
+//
+RETURN_STATUS AppleGetAns(IN CONST APPLE_BOOT_INFO *Info, OUT APPLE_ANS *Ans);
+
 #endif /* APPLEDTLIB_H */

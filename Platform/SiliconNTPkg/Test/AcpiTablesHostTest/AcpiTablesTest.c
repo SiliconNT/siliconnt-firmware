@@ -9,6 +9,11 @@
   next to the ASL that describes it, for run.sh to compare with what the ASL
   compiler makes of that ASL.
 
+  The node of the internal disk controller (Drivers/AcpiPlatformDxe/AnsNode.c):
+  from the M4 MacBook Pro's tree with its table of interrupt numbers, the values
+  it must have; from trees that lack something, no node and the DSDT of the
+  processors alone, the static one.
+
   Usage: AcpiTablesTest <directory of the static tables> <directory to write to>.
   Run it with ./run.sh.
 
@@ -18,6 +23,7 @@
 #include "../../../../Silicon/Apple/AppleSiliconPkg/Test/AppleDTLibHostTest/HostTest.h"
 
 #include "../../Drivers/AcpiPlatformDxe/AcpiTableBuilder.c"
+#include "../../Drivers/AcpiPlatformDxe/AnsNode.c"
 
 #include <stdlib.h>
 
@@ -223,22 +229,61 @@ STATIC VOID CheckDbg2(IN CONST CHAR8 *What, IN CONST TEST_MACHINE *Machine, IN U
 }
 
 //
-// The DSDT for these cores, compared with nothing here: it is written to
-// <Name>.aml, and the ASL that describes the same thing to <Name>.asl. run.sh
-// has the ASL compiler build the latter and compares.
+// The ASL of the disk controller's node, written here from the ACPI and _DSD
+// specifications and not from the builder: the hardware ID, the UUID and the key
+// are spelled out again.
 //
-STATIC VOID WriteDsdt(IN CONST CHAR8 *Name, IN CONST APPLE_CPU *Cpus, IN UINTN Count, IN UINT32 ChipId)
+STATIC UINTN WriteAnsAsl(OUT CHAR8 *Asl, IN UINTN Room, IN CONST DSDT_ANS *Ans)
+{
+    CONST APPLE_MMIO_RANGE *Ranges[3] = { &Ans->Nvme, &Ans->Coprocessor, &Ans->Sart };
+    UINTN                  Used;
+    UINTN                  Index;
+
+    Used = snprintf(Asl, Room,
+                    "    Device (ANS0) {\n"
+                    "      Name (_HID, \"SLNT0001\")\n"
+                    "      Name (_UID, 0)\n"
+                    "      Name (_CCA, 0)\n"
+                    "      Name (_CRS, ResourceTemplate () {\n");
+    for(Index = 0; Index < ARRAY_SIZE(Ranges); Index++) {
+        Used += snprintf(Asl + Used, Room - Used,
+                         "        QWordMemory (ResourceConsumer, PosDecode, MinFixed, MaxFixed, NonCacheable, ReadWrite, 0x0, 0x%llX, 0x%llX, 0x0, 0x%llX)\n",
+                         (unsigned long long)Ranges[Index]->Base, (unsigned long long)(Ranges[Index]->Base + (Ranges[Index]->Size - 1)),
+                         (unsigned long long)Ranges[Index]->Size);
+    }
+    Used += snprintf(Asl + Used, Room - Used,
+                     "        Interrupt (ResourceConsumer, Level, ActiveHigh, Exclusive) { %u }\n"
+                     "        Interrupt (ResourceConsumer, Level, ActiveHigh, Exclusive) { %u }\n"
+                     "      })\n",
+                     (unsigned)Ans->NvmeGsiv, (unsigned)Ans->MailboxGsiv);
+    if(Ans->SecureBar) {
+        Used += snprintf(Asl + Used, Room - Used,
+                         "      Name (_DSD, Package () {\n"
+                         "        ToUUID (\"daffd814-6eba-4d8c-8a91-bc9bbf4aa301\"),\n"
+                         "        Package () { Package (2) { \"nvme-secure-bar\", 1 } }\n"
+                         "      })\n");
+    }
+    Used += snprintf(Asl + Used, Room - Used, "    }\n");
+    return Used;
+}
+
+//
+// The DSDT for these cores and this disk controller (NULL: none), compared with
+// nothing here: it is written to <Name>.aml, and the ASL that describes the same
+// thing to <Name>.asl. run.sh has the ASL compiler build the latter and compares.
+//
+STATIC VOID WriteDsdt(IN CONST CHAR8 *Name, IN CONST APPLE_CPU *Cpus, IN UINTN Count, IN CONST DSDT_ANS *Ans, IN UINT32 ChipId)
 {
     STATIC CONST CHAR8 Suffix[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
     CHAR8              Asl[8192];
     UINTN              Used;
     UINTN              Index;
-    UINTN              Size = DsdtSize(Cpus, Count);
+    UINTN              Size = DsdtSize(Cpus, Count, Ans);
     CHAR8              Line[256];
 
     memset(mTable, 0xa5, sizeof(mTable));
     snprintf(Line, sizeof(Line), "%s: the DSDT is built, %u bytes, revision 2, nothing written beyond it", Name, (unsigned)Size);
-    if(!Expect(Size < sizeof(mTable) && DsdtBuild(ChipId, CREATOR_REVISION, Cpus, Count, mTable) == RETURN_SUCCESS &&
+    if(!Expect(Size < sizeof(mTable) && DsdtBuild(ChipId, CREATOR_REVISION, Cpus, Count, Ans, mTable) == RETURN_SUCCESS &&
                HeaderIs((VOID *)mTable, "DSDT", Size, 2, "Apple ", ChipId) && mTable[Size - 1] != 0xa5 && mTable[Size] == 0xa5, Line)) {
         return;
     }
@@ -248,11 +293,14 @@ STATIC VOID WriteDsdt(IN CONST CHAR8 *Name, IN CONST APPLE_CPU *Cpus, IN UINTN C
     for(Index = 0; Index < Count; Index++) {
         Used += snprintf(Asl + Used, sizeof(Asl) - Used, "    Device (CPU%c) { Name (_HID, \"ACPI0007\") Name (_UID, %u) }\n", Suffix[Cpus[Index].Number], (unsigned)Cpus[Index].Number);
     }
+    if(Ans != NULL) {
+        Used += WriteAnsAsl(Asl + Used, sizeof(Asl) - Used, Ans);
+    }
     Used += snprintf(Asl + Used, sizeof(Asl) - Used, "  }\n}\n");
     WriteOutput(Name, "asl", Asl, Used);
 }
 
-STATIC VOID WriteDsdtOfNumbers(IN CONST CHAR8 *Name, IN CONST UINT32 *Numbers, IN UINTN Count)
+STATIC VOID WriteDsdtOfNumbers(IN CONST CHAR8 *Name, IN CONST UINT32 *Numbers, IN UINTN Count, IN CONST DSDT_ANS *Ans)
 {
     APPLE_CPU Cpus[APPLE_MAX_CPUS + 4];
     UINTN     Index;
@@ -261,14 +309,199 @@ STATIC VOID WriteDsdtOfNumbers(IN CONST CHAR8 *Name, IN CONST UINT32 *Numbers, I
     for(Index = 0; Index < Count; Index++) {
         Cpus[Index].Number = Numbers[Index];
     }
-    WriteDsdt(Name, Cpus, Count, 0x8132);
+    WriteDsdt(Name, Cpus, Count, Ans, 0x8132);
 }
 
 #define DSDT_OF(Name, ...) \
     do { \
         STATIC CONST UINT32 Numbers[] = { __VA_ARGS__ }; \
-        WriteDsdtOfNumbers(Name, Numbers, ARRAY_SIZE(Numbers)); \
+        WriteDsdtOfNumbers(Name, Numbers, ARRAY_SIZE(Numbers), NULL); \
     } while(0)
+
+//
+// The disk controller's node the M4 MacBook Pro must get: the registers of
+// /arm-io/ans and /arm-io/sart-ans (SiliconNT findings/0057, conclusion 20, and
+// findings/0062), AIC 1018 and 1006 as GIC 258 and 257, "nvme-secure-bar"
+//
+STATIC CONST DSDT_ANS mM4Node = {
+    { 0x4c5cc0000ULL, 0x60000 },
+    { 0x481600000ULL, 0x88000 },
+    { 0x485c50000ULL, 0xc000 },
+    258, 257, TRUE
+};
+
+STATIC BOOLEAN SameNode(IN CONST DSDT_ANS *A, IN CONST DSDT_ANS *B)
+{
+    return A->Nvme.Base == B->Nvme.Base && A->Nvme.Size == B->Nvme.Size &&
+           A->Coprocessor.Base == B->Coprocessor.Base && A->Coprocessor.Size == B->Coprocessor.Size &&
+           A->Sart.Base == B->Sart.Base && A->Sart.Size == B->Sart.Size &&
+           A->NvmeGsiv == B->NvmeGsiv && A->MailboxGsiv == B->MailboxGsiv && A->SecureBar == B->SecureBar;
+}
+
+//
+// What AcpiPlatformDxe does with the tree of Machine: read the cores and the disk
+// controller, build the DSDT with the node if there is one. Checks the outcome
+// and, with a node, its values. Writes the DSDT and its ASL as <Name>.
+//
+STATIC VOID CheckAnsNode(IN CONST CHAR8 *Name, IN CONST TEST_MACHINE *Machine, IN ANS_NODE_OUTCOME ExpectedOutcome, IN CONST DSDT_ANS *ExpectedNode)
+{
+    STATIC CONST DSDT_ANS Zero;
+    APPLE_CPU             Cpus[APPLE_MAX_CPUS];
+    UINTN                 Count;
+    UINT64                UartBase;
+    UINT32                ChipId;
+    ANS_NODE              Ans;
+    CHAR8                 Line[256];
+
+    snprintf(Line, sizeof(Line), "%s: outcome %d, %s", Name, (int)ExpectedOutcome, ExpectedNode != NULL ? "the node has the values it must have" : "no node");
+    if(!Expect(ReadMachine(Machine, Cpus, &Count, &UartBase, &ChipId), Line)) {
+        return;
+    }
+    memset(&Ans, 0x5a, sizeof(Ans));
+    FindAnsNode(BuiltTree(), &Ans);
+    if(!Expect(Ans.Outcome == ExpectedOutcome && SameNode(&Ans.Node, ExpectedNode != NULL ? ExpectedNode : &Zero), Line)) {
+        printf("      outcome %d status 0x%llx nvme 0x%llx+0x%llx coprocessor 0x%llx+0x%llx sart 0x%llx+0x%llx gsiv %u %u secure-bar %d\n",
+               (int)Ans.Outcome, (unsigned long long)Ans.Status, (unsigned long long)Ans.Node.Nvme.Base, (unsigned long long)Ans.Node.Nvme.Size,
+               (unsigned long long)Ans.Node.Coprocessor.Base, (unsigned long long)Ans.Node.Coprocessor.Size,
+               (unsigned long long)Ans.Node.Sart.Base, (unsigned long long)Ans.Node.Sart.Size,
+               (unsigned)Ans.Node.NvmeGsiv, (unsigned)Ans.Node.MailboxGsiv, (int)Ans.Node.SecureBar);
+        return;
+    }
+    WriteDsdt(Name, Cpus, Count, Ans.Outcome == AnsNodeMade ? &Ans.Node : NULL, ChipId);
+}
+
+//
+// A tree from which no node is made gives the DSDT the firmware built before
+// there was one: for the cores of the M4 MacBook Pro, the static DSDT of 816ea14
+// but for checksum and creator (CheckAgainstStatic())
+//
+STATIC VOID CheckNoNodeIsStatic(IN CONST CHAR8 *What, IN CONST TEST_MACHINE *Machine)
+{
+    APPLE_CPU  Cpus[APPLE_MAX_CPUS];
+    UINTN      Count;
+    UINT64     UartBase;
+    UINT32     ChipId;
+    ANS_NODE   Ans;
+    UINT8      Static[4096];
+    UINTN      Size;
+
+    Size = ReadStatic("Dsdt.aml", Static, sizeof(Static));
+    if(!ReadMachine(Machine, Cpus, &Count, &UartBase, &ChipId)) {
+        Expect(FALSE, What);
+        return;
+    }
+    FindAnsNode(BuiltTree(), &Ans);
+    Expect(Ans.Outcome != AnsNodeMade && Size == DsdtSize(Cpus, Count, NULL) &&
+           DsdtBuild(ChipId, CREATOR_REVISION, Cpus, Count, NULL, mTable) == RETURN_SUCCESS &&
+           memcmp(mTable, Static, 9) == 0 && memcmp(mTable + 10, Static + 10, 18) == 0 && memcmp(mTable + 36, Static + 36, Size - 36) == 0, What);
+}
+
+// The M4 MacBook Pro as m1n1 hands it over, with another disk controller or another table
+STATIC TEST_MACHINE M4With(IN CONST TEST_ANS *Ans, IN CONST UINT32 *AicToGic, IN UINT32 AicToGicCount)
+{
+    TEST_MACHINE Machine = mM4MacBookProWithAns;
+
+    Machine.Ans           = Ans;
+    Machine.AicToGic      = AicToGic;
+    Machine.AicToGicCount = AicToGicCount;
+    return Machine;
+}
+
+STATIC VOID CheckAnsNodes(VOID)
+{
+    STATIC UINT32 WithoutNvmeLine[ARRAY_SIZE(mAicToGicOfM4MacBookPro)];
+    STATIC UINT32 WithoutMailboxLine[ARRAY_SIZE(mAicToGicOfM4MacBookPro)];
+    STATIC CONST UINT32 Descending[] = { 1018, 1006 };
+    TEST_MACHINE  Machine;
+    TEST_ANS      Ans;
+    DSDT_ANS      Node;
+    UINT32        Count = 0;
+    UINT32        CountMailbox = 0;
+    UINTN         Index;
+
+    for(Index = 0; Index < ARRAY_SIZE(mAicToGicOfM4MacBookPro); Index++) {
+        if(mAicToGicOfM4MacBookPro[Index] != 1018) {
+            WithoutNvmeLine[Count++] = mAicToGicOfM4MacBookPro[Index];
+        }
+        if(mAicToGicOfM4MacBookPro[Index] != 1006) {
+            WithoutMailboxLine[CountMailbox++] = mAicToGicOfM4MacBookPro[Index];
+        }
+    }
+
+    //
+    // A node
+    //
+    CheckAnsNode("m4-macbook-pro-ans", &mM4MacBookProWithAns, AnsNodeMade, &mM4Node);
+
+    Ans           = mAnsOfM4MacBookPro;
+    Ans.SecureBar = FALSE;
+    Machine       = M4With(&Ans, mAicToGicOfM4MacBookPro, ARRAY_SIZE(mAicToGicOfM4MacBookPro));
+    Node          = mM4Node;
+    Node.Nvme.Base = 0x485cc0000ULL;
+    Node.SecureBar = FALSE;
+    CheckAnsNode("m4-macbook-pro-ans-no-secure-bar", &Machine, AnsNodeMade, &Node);
+
+    // Only the lines of the disk controller in the table: they are GIC 32 to 36
+    {
+        STATIC CONST UINT32 Lines[] = { 1003, 1004, 1005, 1006, 1018 };
+
+        Machine          = M4With(&mAnsOfM4MacBookPro, Lines, ARRAY_SIZE(Lines));
+        Node             = mM4Node;
+        Node.MailboxGsiv = 35;
+        Node.NvmeGsiv    = 36;
+        CheckAnsNode("m4-macbook-pro-ans-short-table", &Machine, AnsNodeMade, &Node);
+    }
+
+    //
+    // No node; the DSDT is the one without it
+    //
+    CheckAnsNode("no-node-no-disk-controller", &mM4MacBookPro, AnsNodeNoDevice, NULL);
+    Machine = M4With(NULL, mAicToGicOfM4MacBookPro, ARRAY_SIZE(mAicToGicOfM4MacBookPro));
+    CheckAnsNode("no-node-no-disk-controller-but-a-table", &Machine, AnsNodeNoDevice, NULL);
+    CheckNoNodeIsStatic("a table and no /arm-io/ans: the static DSDT of 816ea14", &Machine);
+
+    Machine = M4With(&mAnsOfM4MacBookPro, NULL, 0);
+    CheckAnsNode("no-node-no-table", &Machine, AnsNodeNoTable, NULL);
+    CheckNoNodeIsStatic("/arm-io/ans and no AICToGIC: the static DSDT of 816ea14", &Machine);
+
+    Machine = M4With(&mAnsOfM4MacBookPro, Descending, ARRAY_SIZE(Descending));
+    CheckAnsNode("no-node-unusable-table", &Machine, AnsNodeNoTable, NULL);
+
+    Machine = M4With(&mAnsOfM4MacBookPro, WithoutNvmeLine, Count);
+    CheckAnsNode("no-node-no-controller-line", &Machine, AnsNodeNvmeLineMissing, NULL);
+    CheckNoNodeIsStatic("a table without AIC 1018: the static DSDT of 816ea14", &Machine);
+
+    Machine = M4With(&mAnsOfM4MacBookPro, WithoutMailboxLine, CountMailbox);
+    CheckAnsNode("no-node-no-mailbox-line", &Machine, AnsNodeMailboxLineMissing, NULL);
+
+    Ans      = mAnsOfM4MacBookPro;
+    Ans.Omit = OMIT_ANS_INTERRUPTS;
+    Machine  = M4With(&Ans, mAicToGicOfM4MacBookPro, ARRAY_SIZE(mAicToGicOfM4MacBookPro));
+    CheckAnsNode("no-node-no-interrupts", &Machine, AnsNodeNoDevice, NULL);
+    CheckNoNodeIsStatic("/arm-io/ans without \"interrupts\": the static DSDT of 816ea14", &Machine);
+
+    Ans.Omit = OMIT_SART;
+    Machine  = M4With(&Ans, mAicToGicOfM4MacBookPro, ARRAY_SIZE(mAicToGicOfM4MacBookPro));
+    CheckAnsNode("no-node-no-sart", &Machine, AnsNodeNoDevice, NULL);
+
+    //
+    // The node in other DSDTs: alone, after 32 cores, at the top of the address space
+    //
+    WriteDsdtOfNumbers("ans-alone", NULL, 0, &mM4Node);
+    {
+        STATIC CONST UINT32 Numbers[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31 };
+
+        WriteDsdtOfNumbers("cores-0-to-31-ans", Numbers, ARRAY_SIZE(Numbers), &mM4Node);
+    }
+    Node                  = mM4Node;
+    Node.Nvme.Base        = 0xfffffffffffa0000ULL;
+    Node.Coprocessor.Base = 0;
+    Node.Coprocessor.Size = 1;
+    Node.NvmeGsiv         = 1019;
+    Node.MailboxGsiv      = 32;
+    Node.SecureBar        = FALSE;
+    WriteDsdtOfNumbers("ans-edges", (CONST UINT32[]){ 6 }, 1, &Node);
+}
 
 STATIC VOID CheckAgainstStatic(VOID)
 {
@@ -296,7 +529,7 @@ STATIC VOID CheckAgainstStatic(VOID)
     // own creator ID and revision (bytes 28-35) and fills in the checksum (byte 9).
     //
     Size = ReadStatic("Dsdt.aml", Static, sizeof(Static));
-    Expect(Size == DsdtSize(Cpus, Count) && DsdtBuild(ChipId, CREATOR_REVISION, Cpus, Count, mTable) == RETURN_SUCCESS &&
+    Expect(Size == DsdtSize(Cpus, Count, NULL) && DsdtBuild(ChipId, CREATOR_REVISION, Cpus, Count, NULL, mTable) == RETURN_SUCCESS &&
            memcmp(mTable, Static, 9) == 0 && memcmp(mTable + 10, Static + 10, 18) == 0 && memcmp(mTable + 36, Static + 36, Size - 36) == 0,
            "M4 MacBook Pro: the DSDT is the static one of 816ea14, all 331 bytes but checksum and creator");
 }
@@ -322,9 +555,31 @@ STATIC VOID CheckRefusals(VOID)
 
     Cpus[2].Number = 36;
     memset(mTable, 0xa5, sizeof(mTable));
-    Expect(DsdtBuild(0x8132, 1, Cpus, 4, mTable) == RETURN_INVALID_PARAMETER && mTable[0] == 0xa5, "DSDT: core number 36 is refused, nothing is written");
+    Expect(DsdtBuild(0x8132, 1, Cpus, 4, NULL, mTable) == RETURN_INVALID_PARAMETER && mTable[0] == 0xa5, "DSDT: core number 36 is refused, nothing is written");
+    Cpus[2].Number = 2;
 
     Expect(EmulatedGicRedistributorCount(Cpus, 0) == 0, "no cores: no Redistributors");
+
+    {
+        DSDT_ANS Node;
+
+        Node           = mM4Node;
+        Node.Nvme.Size = 0;
+        memset(mTable, 0xa5, sizeof(mTable));
+        Expect(DsdtBuild(0x8132, 1, Cpus, 4, &Node, mTable) == RETURN_INVALID_PARAMETER && mTable[0] == 0xa5, "DSDT: an empty NVMe range is refused, nothing is written");
+        Node           = mM4Node;
+        Node.Sart.Size = 0;
+        Expect(DsdtBuild(0x8132, 1, Cpus, 4, &Node, mTable) == RETURN_INVALID_PARAMETER && mTable[0] == 0xa5, "DSDT: an empty SART range is refused");
+        Node                  = mM4Node;
+        Node.Coprocessor.Base = 0;
+        Node.Coprocessor.Size = 0;
+        Expect(DsdtBuild(0x8132, 1, Cpus, 4, &Node, mTable) == RETURN_INVALID_PARAMETER && mTable[0] == 0xa5, "DSDT: an empty range at address 0 is refused");
+        Node                  = mM4Node;
+        Node.Coprocessor.Base = 0xfffffffffffff000ULL;
+        Expect(DsdtBuild(0x8132, 1, Cpus, 4, &Node, mTable) == RETURN_INVALID_PARAMETER && mTable[0] == 0xa5, "DSDT: a coprocessor range past the top of the address space is refused");
+        Node.Coprocessor.Base = 0xfffffffffff78000ULL;
+        Expect(DsdtBuild(0x8132, 1, Cpus, 4, &Node, mTable) == RETURN_SUCCESS, "DSDT: a coprocessor range that ends at the top is taken");
+    }
 }
 
 int main(int argc, char **argv)
@@ -363,16 +618,16 @@ int main(int argc, char **argv)
     CheckDbg2("eight cores started on core 2", &mOther, 0x2b9200000ULL);
 
     if(Expect(ReadMachine(&mM4MacBookPro, Cpus, &Count, &UartBase, &ChipId), "M4 MacBook Pro: the tree is read")) {
-        WriteDsdt("m4-macbook-pro", Cpus, Count, ChipId);
+        WriteDsdt("m4-macbook-pro", Cpus, Count, NULL, ChipId);
     }
     if(Expect(ReadMachine(&mM4MacBookProOneCore, Cpus, &Count, &UartBase, &ChipId), "M4 MacBook Pro on one core: the tree is read")) {
-        WriteDsdt("m4-macbook-pro-one-core", Cpus, Count, ChipId);
+        WriteDsdt("m4-macbook-pro-one-core", Cpus, Count, NULL, ChipId);
     }
     if(Expect(ReadMachine(&mOther, Cpus, &Count, &UartBase, &ChipId), "eight cores: the tree is read")) {
-        WriteDsdt("eight-cores", Cpus, Count, ChipId);
+        WriteDsdt("eight-cores", Cpus, Count, NULL, ChipId);
     }
     if(Expect(ReadMachine(&mSparse, Cpus, &Count, &UartBase, &ChipId), "cores 9, 3, 1: the tree is read")) {
-        WriteDsdt("cores-9-3-1", Cpus, Count, ChipId);
+        WriteDsdt("cores-9-3-1", Cpus, Count, NULL, ChipId);
     }
     // The scope with cores 2 and 3 is 63 bytes long, the most one length byte holds; one core more needs two
     DSDT_OF("core-0", 0);
@@ -381,6 +636,8 @@ int main(int argc, char **argv)
     DSDT_OF("cores-0-1-2", 0, 1, 2);
     DSDT_OF("cores-10-35", 10, 35);
     DSDT_OF("cores-0-to-31", 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31);
+
+    CheckAnsNodes();
 
     CheckRefusals();
 

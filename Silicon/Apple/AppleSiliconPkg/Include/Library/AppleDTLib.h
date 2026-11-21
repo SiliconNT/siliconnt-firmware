@@ -226,4 +226,69 @@ RETURN_STATUS AppleGetChipId(IN CONST APPLE_BOOT_INFO *Info, OUT UINT32 *ChipId)
 //
 RETURN_STATUS AppleGetBootRamdisk(IN CONST APPLE_BOOT_INFO *Info, OUT UINT64 *Base, OUT UINT64 *Size);
 
+//
+// SiliconNT: the interrupt numbers. Windows knows GIC interrupt numbers only; the
+// devices are wired to Apple's interrupt controller, the AIC. At every boot m1n1
+// collects the AIC numbers of all nodes of its device tree whose
+// "interrupt-parent" is the AIC, sorts them and drops duplicates; the k-th of
+// them (counting from 0) is GIC interrupt 32 + k. The EL2 layer forwards the AIC
+// line under that GIC number. The loader puts the same table into guest memory
+// and names it in the "AICToGIC" property of /chosen/memory-map: base and size
+// in bytes, two 64-bit values, like "RAMDisk".
+//
+// The table, version 1, little-endian:
+//
+//   offset 0  version, 32 bits: 1
+//   offset 4  count n, 32 bits: at most APPLE_AIC_TO_GIC_MAX_COUNT
+//   offset 8  n AIC numbers of 32 bits ("die * lines per die + line"),
+//             strictly ascending; the k-th is GIC interrupt 32 + k
+//
+// The size the property gives is that of the table, 8 + 4 * n bytes. The base is
+// the start of a page.
+//
+// A loader of an older build hands over no table. The firmware then knows the
+// GIC number of no device and describes none that needs an interrupt.
+//
+#define APPLE_AIC_TO_GIC_VERSION    1
+#define APPLE_AIC_TO_GIC_FIRST_GIC  32      // the first shared peripheral interrupt (SPI)
+#define APPLE_AIC_TO_GIC_MAX_COUNT  988     // SPIs 32-1019 (Arm IHI 0069H.b, table 2-1)
+
+typedef struct
+{
+    UINT64       Base;      // what the property says, or 0 if it is not 16 bytes long
+    UINT64       Size;
+    UINT32       Version;   // what the table says, or 0 if it was not read
+    UINT32       Count;
+    CONST UINT32 *Aic;      // the Count AIC numbers; NULL unless RETURN_SUCCESS
+} APPLE_AIC_TO_GIC;
+
+//
+// Reads the table and checks it. Table->Aic points into the memory the loader
+// filled; the entry code keeps that memory as boot services data.
+//
+// RETURN_SUCCESS              *Table is the table.
+// RETURN_NOT_FOUND            There is no "AICToGIC" property: no table.
+// RETURN_INVALID_PARAMETER    The property cannot be used: it is not 16 bytes
+//                             long, the base is not the start of a page, the
+//                             size is below 8, or the range is not inside the
+//                             memory the boot arguments describe. The table has
+//                             not been read.
+// RETURN_INCOMPATIBLE_VERSION The version is not APPLE_AIC_TO_GIC_VERSION.
+// RETURN_BAD_BUFFER_SIZE      The count is above APPLE_AIC_TO_GIC_MAX_COUNT, or
+//                             the size is not 8 + 4 * count.
+// RETURN_COMPROMISED_DATA     The AIC numbers are not strictly ascending.
+//
+// Whatever the status, *Table holds what was read. With any status but
+// RETURN_SUCCESS the caller goes on as if there were no table.
+//
+RETURN_STATUS AppleGetAicToGic(IN CONST APPLE_BOOT_INFO *Info, OUT APPLE_AIC_TO_GIC *Table);
+
+//
+// The GIC interrupt number of an AIC number, from a table AppleGetAicToGic()
+// returned RETURN_SUCCESS for. RETURN_NOT_FOUND when the number is not in the
+// table; *Gic is then 0. Nothing is guessed: a device whose number is not in the
+// table is not described to Windows.
+//
+RETURN_STATUS AppleFindGicInterrupt(IN CONST APPLE_AIC_TO_GIC *Table, IN UINT32 Aic, OUT UINT32 *Gic);
+
 #endif /* APPLEDTLIB_H */

@@ -95,6 +95,75 @@ STATIC VOID ReserveBootRamdisk(IN CONST APPLE_BOOT_INFO *Info)
 }
 
 //
+// SiliconNT: the table of interrupt numbers m1n1 made at this boot (AppleDTLib.h,
+// AppleGetAicToGic). Read here once to say in one line whether there is one, how
+// many numbers it holds and its first and last pair; the code that describes
+// devices to Windows reads it again. Its memory stays where the loader put it, as
+// boot services data like the device tree: nothing needs it once Windows runs.
+//
+// A table that cannot be used does not stop the entry code. A loader of an older
+// build hands over none, and without a table the firmware describes no device
+// that needs an interrupt and boots as before. So the line says why, and the
+// firmware goes on as if there were no table. The memory is kept all the same
+// when the property names a usable range, so that a later reader finds the same
+// bytes and comes to the same verdict.
+//
+STATIC CONST CHAR8 *AicToGicProblem(IN RETURN_STATUS Status)
+{
+    switch(Status) {
+    case RETURN_INVALID_PARAMETER:
+        return "the entry must be 16 bytes long, start at a page, give at least 8 bytes and lie inside memory";
+    case RETURN_INCOMPATIBLE_VERSION:
+        return "the version is not 1";
+    case RETURN_BAD_BUFFER_SIZE:
+        return "the count is above 988 or the size is not 8 + 4 * count";
+    case RETURN_COMPROMISED_DATA:
+        return "the AIC numbers are not strictly ascending";
+    default:
+        return "unknown";
+    }
+}
+
+STATIC VOID ReserveAicToGic(IN CONST APPLE_BOOT_INFO *Info)
+{
+    APPLE_AIC_TO_GIC Table;
+    RETURN_STATUS    Status;
+
+    Status = AppleGetAicToGic(Info, &Table);
+    if(Status == RETURN_NOT_FOUND) {
+        DEBUG((EFI_D_INFO | EFI_D_LOAD, "No AIC-to-GIC table: /chosen/memory-map has no AICToGIC entry\n"));
+        return;
+    }
+    if(Status == RETURN_INVALID_PARAMETER) {
+        DEBUG(
+            (EFI_D_INFO | EFI_D_LOAD | EFI_D_ERROR,
+            "AIC-to-GIC table not used, going on without: base 0x%llx, size 0x%llx: %a (memory 0x%llx, size 0x%llx)\n",
+            Table.Base, Table.Size, AicToGicProblem(Status), Info->BootArgs->phys_base, Info->BootArgs->mem_size));
+        return;
+    }
+
+    ReserveLoaderRange(Table.Base, Table.Size, EfiBootServicesData);
+
+    if(RETURN_ERROR(Status)) {
+        DEBUG(
+            (EFI_D_INFO | EFI_D_LOAD | EFI_D_ERROR,
+            "AIC-to-GIC table not used, going on without: base 0x%llx, size 0x%llx, version %u, count %u: %a\n",
+            Table.Base, Table.Size, Table.Version, Table.Count, AicToGicProblem(Status)));
+        return;
+    }
+    if(Table.Count == 0) {
+        DEBUG((EFI_D_INFO | EFI_D_LOAD, "AIC-to-GIC table: 0x%llx, no numbers\n", Table.Base));
+        return;
+    }
+    DEBUG(
+        (EFI_D_INFO | EFI_D_LOAD,
+        "AIC-to-GIC table: 0x%llx, %u numbers, AIC %u is GIC %u ... AIC %u is GIC %u\n",
+        Table.Base, Table.Count,
+        Table.Aic[0], APPLE_AIC_TO_GIC_FIRST_GIC,
+        Table.Aic[Table.Count - 1], APPLE_AIC_TO_GIC_FIRST_GIC + Table.Count - 1));
+}
+
+//
 // SiliconNT: the boot arguments and the Apple device tree stay where the loader
 // put them. Tell everything that runs later where they are, and where the serial
 // port is (AppleGetBootInfo() in AppleDTLib reads this HOB; so do the serial port
@@ -124,12 +193,14 @@ STATIC VOID PublishBootInfo(IN struct boot_args *BootArgs, OUT APPLE_BOOT_INFO *
 }
 
 //
-// SiliconNT: reserve the boot arguments, the device tree and the boot disk image.
+// SiliconNT: reserve the boot arguments, the device tree, the table of interrupt
+// numbers and the boot disk image.
 //
 STATIC VOID ReserveLoaderRanges(IN CONST APPLE_BOOT_INFO *Info)
 {
     ReserveLoaderRange((UINTN)Info->BootArgs, sizeof(struct boot_args), EfiBootServicesData);
     ReserveLoaderRange((UINTN)Info->DeviceTree, Info->DeviceTreeSize, EfiBootServicesData);
+    ReserveAicToGic(Info);
     ReserveBootRamdisk(Info);
 }
 

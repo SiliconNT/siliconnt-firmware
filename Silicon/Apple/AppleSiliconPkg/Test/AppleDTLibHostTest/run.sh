@@ -4,6 +4,7 @@
 # headers of this tree, and runs it.
 #   BootRamdiskTest.c   AppleGetBootRamdisk()
 #   MachineInfoTest.c   AppleGetCpus(), AppleGetUartBase(), AppleGetMmioSpan(), AppleGetChipId()
+#   AicToGicTest.c      AppleGetAicToGic(), AppleFindGicInterrupt()
 # Needs: cc. Usage: ./run.sh
 set -e
 cd "$(dirname "$0")"
@@ -15,7 +16,7 @@ case "$(uname -m)" in
 esac
 out="$(mktemp)"
 trap 'rm -f "$out"' EXIT
-for test in BootRamdiskTest MachineInfoTest; do
+for test in BootRamdiskTest MachineInfoTest AicToGicTest; do
   echo "== $test"
   # MDEPKG_NDEBUG: no DebugLib. ARM_LIB_H_: skip ArmLib.h, which AppleDTLib.c includes
   # without using it and which refuses to compile for anything but ARM.

@@ -332,50 +332,151 @@ APPLE_BOOT_INFO* AppleGetBootInfo(VOID)
     return (APPLE_BOOT_INFO *)GET_GUID_HOB_DATA(Hob);
 }
 
-// SiliconNT: the boot disk image the loader describes in the device tree; see AppleDTLib.h
-RETURN_STATUS AppleGetBootRamdisk(IN CONST APPLE_BOOT_INFO *Info, OUT UINT64 *Base, OUT UINT64 *Size)
+// SiliconNT: a range the loader names in /chosen/memory-map, base and size.
+// RETURN_NOT_FOUND without the node or the property, RETURN_INVALID_PARAMETER
+// when the property is not 16 bytes long. *Entry is 0 unless RETURN_SUCCESS.
+STATIC RETURN_STATUS ReadMemoryMapEntry(IN CONST APPLE_BOOT_INFO *Info, IN CONST CHAR8 *Key, OUT struct memmap *Entry)
 {
-    dt_node_t     *MemoryMap;
-    VOID          *Value;
-    size_t        Length = 0;
-    struct memmap Entry;
-    UINT64        MemoryBase = Info->BootArgs->phys_base;
-    UINT64        MemorySize = Info->BootArgs->mem_size;
+    dt_node_t *MemoryMap;
+    VOID      *Value;
+    size_t    Length = 0;
 
-    *Base = 0;
-    *Size = 0;
+    Entry->addr = 0;
+    Entry->size = 0;
 
     MemoryMap = dt_find(Info->DeviceTree, "/chosen/memory-map");
     if(MemoryMap == NULL)
     {
         return RETURN_NOT_FOUND;
     }
-    Value = dt_prop(MemoryMap, "RAMDisk", &Length);
+    Value = dt_prop(MemoryMap, Key, &Length);
     if(Value == NULL)
     {
         return RETURN_NOT_FOUND;
     }
-    if(Length != sizeof(Entry))
+    if(Length != sizeof(*Entry))
     {
         return RETURN_INVALID_PARAMETER;
     }
 
     // Property values are aligned to 4 bytes only
-    CopyMem(&Entry, Value, sizeof(Entry));
+    CopyMem(Entry, Value, sizeof(*Entry));
+    return RETURN_SUCCESS;
+}
+
+// SiliconNT: whether a range lies inside the memory the boot arguments describe.
+// Written so that neither side can wrap around.
+STATIC BOOLEAN InsideMemory(IN CONST APPLE_BOOT_INFO *Info, IN UINT64 Base, IN UINT64 Size)
+{
+    UINT64 MemoryBase = Info->BootArgs->phys_base;
+    UINT64 MemorySize = Info->BootArgs->mem_size;
+
+    return Base >= MemoryBase && Base - MemoryBase < MemorySize && Size <= MemorySize - (Base - MemoryBase);
+}
+
+// SiliconNT: the boot disk image the loader describes in the device tree; see AppleDTLib.h
+RETURN_STATUS AppleGetBootRamdisk(IN CONST APPLE_BOOT_INFO *Info, OUT UINT64 *Base, OUT UINT64 *Size)
+{
+    struct memmap Entry;
+    RETURN_STATUS Status;
+
+    Status = ReadMemoryMapEntry(Info, "RAMDisk", &Entry);
     *Base = Entry.addr;
     *Size = Entry.size;
+    if(RETURN_ERROR(Status))
+    {
+        return Status;
+    }
 
     if(Entry.size == 0 || (Entry.addr & EFI_PAGE_MASK) != 0 || (Entry.size & EFI_PAGE_MASK) != 0)
     {
         return RETURN_INVALID_PARAMETER;
     }
-    // Written so that neither side can wrap around
-    if(Entry.addr < MemoryBase || Entry.addr - MemoryBase >= MemorySize || Entry.size > MemorySize - (Entry.addr - MemoryBase))
+    if(!InsideMemory(Info, Entry.addr, Entry.size))
     {
         return RETURN_INVALID_PARAMETER;
     }
 
     return RETURN_SUCCESS;
+}
+
+// SiliconNT: the table of interrupt numbers m1n1 made at this boot; see AppleDTLib.h
+RETURN_STATUS AppleGetAicToGic(IN CONST APPLE_BOOT_INFO *Info, OUT APPLE_AIC_TO_GIC *Table)
+{
+    struct memmap Entry;
+    RETURN_STATUS Status;
+    CONST UINT32  *Words;
+    UINT32        Index;
+
+    ZeroMem(Table, sizeof(*Table));
+
+    Status = ReadMemoryMapEntry(Info, "AICToGIC", &Entry);
+    Table->Base = Entry.addr;
+    Table->Size = Entry.size;
+    if(RETURN_ERROR(Status))
+    {
+        return Status;
+    }
+
+    // The header must be there before it can be read
+    if((Entry.addr & EFI_PAGE_MASK) != 0 || Entry.size < 2 * sizeof(UINT32) || !InsideMemory(Info, Entry.addr, Entry.size))
+    {
+        return RETURN_INVALID_PARAMETER;
+    }
+
+    Words          = (CONST UINT32 *)(UINTN)Entry.addr;
+    Table->Version = Words[0];
+    Table->Count   = Words[1];
+    if(Table->Version != APPLE_AIC_TO_GIC_VERSION)
+    {
+        return RETURN_INCOMPATIBLE_VERSION;
+    }
+    if(Table->Count > APPLE_AIC_TO_GIC_MAX_COUNT || Entry.size != 2 * sizeof(UINT32) + (UINT64)Table->Count * sizeof(UINT32))
+    {
+        return RETURN_BAD_BUFFER_SIZE;
+    }
+    for(Index = 1; Index < Table->Count; Index++)
+    {
+        if(Words[2 + Index] <= Words[2 + Index - 1])
+        {
+            return RETURN_COMPROMISED_DATA;
+        }
+    }
+
+    Table->Aic = &Words[2];
+    return RETURN_SUCCESS;
+}
+
+// SiliconNT: binary search, the numbers being strictly ascending; see AppleDTLib.h
+RETURN_STATUS AppleFindGicInterrupt(IN CONST APPLE_AIC_TO_GIC *Table, IN UINT32 Aic, OUT UINT32 *Gic)
+{
+    UINT32 Low  = 0;
+    UINT32 High = Table->Count;     // the number, if there, is at an index in [Low, High)
+    UINT32 Middle;
+
+    *Gic = 0;
+    if(Table->Aic == NULL)
+    {
+        return RETURN_NOT_FOUND;
+    }
+    while(Low < High)
+    {
+        Middle = Low + (High - Low) / 2;
+        if(Table->Aic[Middle] == Aic)
+        {
+            *Gic = APPLE_AIC_TO_GIC_FIRST_GIC + Middle;
+            return RETURN_SUCCESS;
+        }
+        if(Table->Aic[Middle] < Aic)
+        {
+            Low = Middle + 1;
+        }
+        else
+        {
+            High = Middle;
+        }
+    }
+    return RETURN_NOT_FOUND;
 }
 
 // ========== SiliconNT: what the firmware reads about the machine ==========

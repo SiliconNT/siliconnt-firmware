@@ -27,7 +27,7 @@ The design, and the evidence behind each of these, is in the SiliconNT repositor
 |---|---|
 | `MU_BASECORE`, `Common/TIANO`, `Silicon/ARM/TIANO` | Microsoft's Project Mu repositories, unmodified submodules |
 | `Silicon/Apple/AppleSiliconPkg` | Code common to Apple silicon machines, taken from NTASP (see its `README.md`) |
-| `Platform/MacBookProM4Pkg` | The M4 MacBook Pro: build files, memory map, ACPI tables |
+| `Platform/SiliconNTPkg` | The M4 MacBook Pro: build files, memory map, ACPI tables |
 
 ## Building
 
@@ -42,7 +42,7 @@ python3 -m venv .venv
 ./build.sh           # builds
 ```
 
-The image is `Build/MacBookProM4-AARCH64/DEBUG_CLANGPDB/FV/MACBOOKPROM4_EFI.fd`.
+The image is `Build/SiliconNT-AARCH64/DEBUG_CLANGPDB/FV/SILICONNT_EFI.fd`.
 
 ## State
 

@@ -20,11 +20,11 @@ from edk2toolext.invocables.edk2_update import UpdateSettingsManager
 class CommonPlatform:
     """Settings shared by stuart_setup, stuart_update and stuart_build."""
 
-    PackagesSupported = ("MacBookProM4Pkg",)
+    PackagesSupported = ("SiliconNTPkg",)
     ArchSupported = ("AARCH64",)
     TargetsSupported = ("DEBUG", "RELEASE")
     # No "edk2-build" scope: it only adds the nasm download, which AARCH64 does not need
-    Scopes = ("MacBookProM4",)
+    Scopes = ("SiliconNT",)
     WorkspaceRoot = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     PackagesPath = (
         "Platform",
@@ -67,7 +67,7 @@ class SettingsManager(UpdateSettingsManager, SetupSettingsManager):
         return CommonPlatform.Scopes
 
     def GetName(self):
-        return "MacBookProM4"
+        return "SiliconNT"
 
     def GetPackagesPath(self):
         return CommonPlatform.PackagesPath
@@ -96,14 +96,14 @@ class PlatformBuilder(UefiBuilder, BuildSettingsManager):
         return CommonPlatform.Scopes
 
     def GetName(self):
-        return "MacBookProM4"
+        return "SiliconNT"
 
     def GetLoggingLevel(self, loggerType):
         return logging.INFO if loggerType == "con" else logging.DEBUG
 
     def SetPlatformEnv(self):
-        self.env.SetValue("PRODUCT_NAME", "MacBookProM4", "Platform Hardcoded")
-        self.env.SetValue("ACTIVE_PLATFORM", "MacBookProM4Pkg/MacBookProM4.dsc", "Platform Hardcoded")
+        self.env.SetValue("PRODUCT_NAME", "SiliconNT", "Platform Hardcoded")
+        self.env.SetValue("ACTIVE_PLATFORM", "SiliconNTPkg/SiliconNT.dsc", "Platform Hardcoded")
         self.env.SetValue("TARGET_ARCH", "AARCH64", "Platform Hardcoded")
         self.env.SetValue("TOOL_CHAIN_TAG", "CLANGPDB", "Only clang has been tried")
         return 0

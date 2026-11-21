@@ -28,8 +28,8 @@ Also derived from the same commit, outside this directory:
 
 | File | From |
 |---|---|
-| `Platform/MacBookProM4Pkg/Library/MemoryInitPeiLib/` | `Silicon/Apple/T602XFamilyPkg/Library/MemoryInitPeiLib/` |
-| `Platform/MacBookProM4Pkg/AcpiTables/Madt.aslc`, `Gtdt.aslc` | `Silicon/Apple/T602XFamilyPkg/AcpiTables/` |
-| `Platform/MacBookProM4Pkg/AcpiTables/Fadt.aslc`, `Dbg2.aslc` | `Platform/MacBookProEarly2023Pkg/AcpiTables/` |
-| `Platform/MacBookProM4Pkg/Include/Acpi/AcpiHeader.h` | `Silicon/Apple/AppleSiliconPkg/Include/Acpi/AcpiHeader.h` |
-| `Platform/MacBookProM4Pkg/MacBookProM4.dsc`, `.fdf`, `PlatformBuild.py` | `Silicon/Apple/AppleSiliconPkg/AppleSiliconPkg.dsc.inc`, `Platform/MacBookProEarly2023Pkg/` |
+| `Platform/SiliconNTPkg/Library/MemoryInitPeiLib/` | `Silicon/Apple/T602XFamilyPkg/Library/MemoryInitPeiLib/` |
+| `Platform/SiliconNTPkg/AcpiTables/Madt.aslc`, `Gtdt.aslc` | `Silicon/Apple/T602XFamilyPkg/AcpiTables/` |
+| `Platform/SiliconNTPkg/AcpiTables/Fadt.aslc`, `Dbg2.aslc` | `Platform/MacBookProEarly2023Pkg/AcpiTables/` |
+| `Platform/SiliconNTPkg/Include/Acpi/AcpiHeader.h` | `Silicon/Apple/AppleSiliconPkg/Include/Acpi/AcpiHeader.h` |
+| `Platform/SiliconNTPkg/SiliconNT.dsc`, `.fdf`, `PlatformBuild.py` | `Silicon/Apple/AppleSiliconPkg/AppleSiliconPkg.dsc.inc`, `Platform/MacBookProEarly2023Pkg/` |

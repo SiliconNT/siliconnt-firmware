@@ -18,15 +18,15 @@
 ##
 
 [Defines]
-  PLATFORM_NAME                  = MacBookProM4
+  PLATFORM_NAME                  = SiliconNT
   PLATFORM_GUID                  = 5a1c7d0e-3b7f-4d0b-9a55-6e0f3c2b8f14
   PLATFORM_VERSION               = 0.1
   DSC_SPECIFICATION              = 0x00010005
-  OUTPUT_DIRECTORY               = Build/MacBookProM4-$(ARCH)
+  OUTPUT_DIRECTORY               = Build/SiliconNT-$(ARCH)
   SUPPORTED_ARCHITECTURES        = AARCH64
   BUILD_TARGETS                  = DEBUG|RELEASE
   SKUID_IDENTIFIER               = DEFAULT
-  FLASH_DEFINITION               = MacBookProM4Pkg/MacBookProM4.fdf
+  FLASH_DEFINITION               = SiliconNTPkg/SiliconNT.fdf
 
 [BuildOptions.common]
   *_CLANGPDB_AARCH64_CC_FLAGS = -Wno-unused-const-variable -Wno-sometimes-uninitialized -D CLANG
@@ -246,7 +246,7 @@
   PrePiLib|EmbeddedPkg/Library/PrePiLib/PrePiLib.inf
   ExtractGuidedSectionLib|EmbeddedPkg/Library/PrePiExtractGuidedSectionLib/PrePiExtractGuidedSectionLib.inf
   ArmMmuLib|ArmPkg/Library/ArmMmuLib/ArmMmuPeiLib.inf
-  MemoryInitPeiLib|MacBookProM4Pkg/Library/MemoryInitPeiLib/MemoryInitPeiLib.inf
+  MemoryInitPeiLib|SiliconNTPkg/Library/MemoryInitPeiLib/MemoryInitPeiLib.inf
   PlatformPeiLib|AppleSiliconPkg/Library/PlatformPeiLib/PlatformPeiLib.inf
 
 [LibraryClasses.common.DXE_CORE]
@@ -293,7 +293,7 @@
   ArmPkg/Drivers/TimerDxe/TimerDxe.inf
   # What the DXE core of the pinned mu_basecore sleeps through when it is idle; nothing
   # else here produces it (SiliconNT docs/findings/0023)
-  MacBookProM4Pkg/Drivers/Cpu2Dxe/Cpu2Dxe.inf
+  SiliconNTPkg/Drivers/Cpu2Dxe/Cpu2Dxe.inf
 
   # Architectural protocols
   MdeModulePkg/Core/RuntimeDxe/RuntimeDxe.inf
@@ -358,6 +358,6 @@
   # ACPI and SMBIOS
   MdeModulePkg/Universal/Acpi/AcpiTableDxe/AcpiTableDxe.inf
   MdeModulePkg/Universal/Acpi/AcpiPlatformDxe/AcpiPlatformDxe.inf
-  MacBookProM4Pkg/AcpiTables/AcpiTables.inf
+  SiliconNTPkg/AcpiTables/AcpiTables.inf
   MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
   AppleSiliconPkg/Drivers/SmbiosInfoDxe/SmbiosInfoDxe.inf

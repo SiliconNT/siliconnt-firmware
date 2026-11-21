@@ -6,7 +6,7 @@
 
 [Defines]
   DEC_SPECIFICATION              = 0x00010005
-  PACKAGE_NAME                   = MacBookProM4Pkg
+  PACKAGE_NAME                   = SiliconNTPkg
   PACKAGE_GUID                   = 0c5b2c7e-64a5-4a8c-9b0e-3f6a1c1f8d21
   PACKAGE_VERSION                = 0.1
 
@@ -14,4 +14,4 @@
   Include
 
 [Guids.common]
-  gMacBookProM4PkgTokenSpaceGuid = { 0x7d3e9a40, 0x52c1, 0x4f6b, { 0x8a, 0x17, 0x2b, 0x90, 0x6e, 0x4d, 0xc3, 0x55 } }
+  gSiliconNTPkgTokenSpaceGuid = { 0x7d3e9a40, 0x52c1, 0x4f6b, { 0x8a, 0x17, 0x2b, 0x90, 0x6e, 0x4d, 0xc3, 0x55 } }

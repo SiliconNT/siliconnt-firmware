@@ -30,7 +30,7 @@
   MdePkg/MdePkg.dec
   MdeModulePkg/MdeModulePkg.dec
   AppleSiliconPkg/AppleSiliconPkg.dec
-  MacBookProM4Pkg/MacBookProM4Pkg.dec
+  SiliconNTPkg/SiliconNTPkg.dec
 
 [FixedPcd]
   gEfiMdeModulePkgTokenSpaceGuid.PcdAcpiDefaultCreatorRevision

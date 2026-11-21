@@ -12,9 +12,9 @@ export CLANGPDB_AARCH64_PREFIX="${CLANGPDB_AARCH64_PREFIX:-aarch64-linux-gnu-}"
 step="${1:-build}"
 [ $# -gt 0 ] && shift
 if [ "$step" = setup ]; then
-  stuart_setup -c Platform/MacBookProM4Pkg/PlatformBuild.py TOOL_CHAIN_TAG=CLANGPDB "$@"
+  stuart_setup -c Platform/SiliconNTPkg/PlatformBuild.py TOOL_CHAIN_TAG=CLANGPDB "$@"
   # The only nested submodules the build needs: MdePkg.dec and MdeModulePkg.dec name
   # include directories inside them. The others are left out.
   exec git -C MU_BASECORE submodule update --init --depth 1     MdePkg/Library/MipiSysTLib/mipisyst     MdeModulePkg/Library/BrotliCustomDecompressLib/brotli
 fi
-exec "stuart_$step" -c Platform/MacBookProM4Pkg/PlatformBuild.py TOOL_CHAIN_TAG=CLANGPDB "$@"
+exec "stuart_$step" -c Platform/SiliconNTPkg/PlatformBuild.py TOOL_CHAIN_TAG=CLANGPDB "$@"

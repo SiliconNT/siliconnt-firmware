@@ -14,6 +14,10 @@
   it must have; from trees that lack something, no node and the DSDT of the
   processors alone, the static one.
 
+  Without a serial port (the tree has no /arm-io/uart0, as m1n1 hands it over
+  when no host is attached): no DBG2, and the MADT and the DSDT are the same as
+  with one.
+
   Usage: AcpiTablesTest <directory of the static tables> <directory to write to>.
   Run it with ./run.sh.
 
@@ -118,13 +122,21 @@ STATIC VOID WriteOutput(IN CONST CHAR8 *Name, IN CONST CHAR8 *Extension, IN CONS
     }
 }
 
-// What the firmware reads from the tree of Machine, as AcpiPlatformDxe does
+// The serial port as the entry code reads it (PrePi/AdtParser.c): no /arm-io/uart0 is no port, address 0
+STATIC BOOLEAN ReadSerialPort(IN CONST APPLE_BOOT_INFO *Info, OUT UINT64 *UartBase)
+{
+    RETURN_STATUS Status = AppleGetUartBase(Info, UartBase);
+
+    return Status == RETURN_SUCCESS || Status == RETURN_NOT_FOUND;
+}
+
+// What the firmware reads from the tree of Machine: the serial port as the entry code does, the rest as AcpiPlatformDxe does
 STATIC BOOLEAN ReadMachine(IN CONST TEST_MACHINE *Machine, OUT APPLE_CPU *Cpus, OUT UINTN *Count, OUT UINT64 *UartBase, OUT UINT32 *ChipId)
 {
     BuildMachine(Machine);
     return dt_check(mTree, mUsed, NULL) == 0 &&
            AppleGetCpus(BuiltTree(), Cpus, Count) == RETURN_SUCCESS &&
-           AppleGetUartBase(BuiltTree(), UartBase) == RETURN_SUCCESS &&
+           ReadSerialPort(BuiltTree(), UartBase) &&
            AppleGetChipId(BuiltTree(), ChipId) == RETURN_SUCCESS;
 }
 
@@ -534,6 +546,63 @@ STATIC VOID CheckAgainstStatic(VOID)
            "M4 MacBook Pro: the DSDT is the static one of 816ea14, all 331 bytes but checksum and creator");
 }
 
+//
+// A DBG2 only with a serial port. Without one, the tables that are installed are
+// the same as with one: for the M4 MacBook Pro with its disk controller, the MADT
+// and the DSDT with the controller's node, byte for byte.
+//
+STATIC VOID CheckWithoutSerialPort(VOID)
+{
+    STATIC CONST struct {
+        CONST CHAR8 *What;
+        TEST_UART   Uart;
+    } Cases[] = {
+        { "the name of uart0 cleared, as m1n1 hands the tree over without a host", TestUartNameCleared },
+        { "no uart0", TestUartLeftOut },
+    };
+    STATIC UINT8  Madt[4096];
+    STATIC UINT8  Dsdt[4096];
+    TEST_MACHINE  Machine = mM4MacBookProWithAns;
+    APPLE_CPU     Cpus[APPLE_MAX_CPUS];
+    UINTN         Count;
+    UINT64        UartBase;
+    UINT32        ChipId;
+    ANS_NODE      Ans;
+    UINTN         MadtLength;
+    UINTN         DsdtLength;
+    UINTN         Index;
+    CHAR8         Line[256];
+
+    if(!Expect(ReadMachine(&Machine, Cpus, &Count, &UartBase, &ChipId), "M4 MacBook Pro with its disk controller: the tree is read")) {
+        return;
+    }
+    FindAnsNode(BuiltTree(), &Ans);
+    if(!Expect(Dbg2Wanted(UartBase) && UartBase == 0x3ad200000ULL && Ans.Outcome == AnsNodeMade &&
+               MadtBuild(ChipId, CREATOR_REVISION, Cpus, Count, DISTRIBUTOR_BASE, REDISTRIBUTORS_BASE, Madt) == RETURN_SUCCESS &&
+               DsdtBuild(ChipId, CREATOR_REVISION, Cpus, Count, &Ans.Node, Dsdt) == RETURN_SUCCESS,
+               "M4 MacBook Pro with uart0: a DBG2 for the port at 0x3_ad20_0000; MADT, DSDT with the disk controller")) {
+        return;
+    }
+    MadtLength = MadtSize(Count);
+    DsdtLength = DsdtSize(Cpus, Count, &Ans.Node);
+
+    for(Index = 0; Index < ARRAY_SIZE(Cases); Index++) {
+        Machine.Uart = Cases[Index].Uart;
+        snprintf(Line, sizeof(Line), "%s: the tree is read, no serial port, no DBG2", Cases[Index].What);
+        if(!Expect(ReadMachine(&Machine, Cpus, &Count, &UartBase, &ChipId) && UartBase == 0 && !Dbg2Wanted(UartBase), Line)) {
+            continue;
+        }
+        FindAnsNode(BuiltTree(), &Ans);
+        snprintf(Line, sizeof(Line), "%s: MADT and DSDT with the disk controller as with uart0, byte for byte", Cases[Index].What);
+        Expect(Ans.Outcome == AnsNodeMade && MadtSize(Count) == MadtLength &&
+               MadtBuild(ChipId, CREATOR_REVISION, Cpus, Count, DISTRIBUTOR_BASE, REDISTRIBUTORS_BASE, mTable) == RETURN_SUCCESS &&
+               memcmp(mTable, Madt, MadtLength) == 0 &&
+               DsdtSize(Cpus, Count, &Ans.Node) == DsdtLength &&
+               DsdtBuild(ChipId, CREATOR_REVISION, Cpus, Count, &Ans.Node, mTable) == RETURN_SUCCESS &&
+               memcmp(mTable, Dsdt, DsdtLength) == 0, Line);
+    }
+}
+
 STATIC VOID CheckRefusals(VOID)
 {
     APPLE_CPU Cpus[APPLE_MAX_CPUS + 1];
@@ -638,6 +707,8 @@ int main(int argc, char **argv)
     DSDT_OF("cores-0-to-31", 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31);
 
     CheckAnsNodes();
+
+    CheckWithoutSerialPort();
 
     CheckRefusals();
 

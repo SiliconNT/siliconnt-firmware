@@ -278,26 +278,44 @@ int main(void)
     CheckUart("an address below every range stays as it is", RETURN_SUCCESS, 0x0ad200000ULL);
     BuildWithRanges(NULL, 0, 0x1ad200000ULL, 0x4000);
     CheckUart("empty \"ranges\": the address stays as it is", RETURN_SUCCESS, 0x1ad200000ULL);
+    BuildWithRanges(NULL, 0, 0, 0x4000);
+    CheckUart("an address of 0, which stands for no port, is a fault", RETURN_INVALID_PARAMETER, 0);
     BuildByHand(1, 1, 1, Ranges32, sizeof(Ranges32), Reg32, sizeof(Reg32), TRUE, 4);
     CheckUart("32-bit cells everywhere", RETURN_SUCCESS, 0x90200000ULL);
     BuildByHand(1, 2, 1, RangesMixed, sizeof(RangesMixed), Reg32, sizeof(Reg32), TRUE, 4);
     CheckUart("32-bit bus, 64-bit addresses for the CPU", RETURN_SUCCESS, 0x290200000ULL);
     BuildByHand(2, 2, 2, mRangesOfM4MacBookPro, sizeof(mRangesOfM4MacBookPro), Reg64, sizeof(Reg64), FALSE, 4);
-    CheckUart("no uart0", RETURN_NOT_FOUND, 0);
+    CheckUart("no uart0: no serial port", RETURN_NOT_FOUND, 0);
+    {
+        TEST_MACHINE Machine = mM4MacBookPro;
+
+        // What m1n1 hands over when no host is attached hides the port and nothing else
+        Machine.Uart = TestUartNameCleared;
+        BuildMachine(&Machine);
+        CheckUart("M4 MacBook Pro with the name of uart0 cleared, as m1n1 hands it over without a host: no serial port", RETURN_NOT_FOUND, 0);
+        CheckCpus("the same tree: the cores as with the name", &Machine, M4Cpus, ARRAY_SIZE(M4Cpus));
+        CheckSpan("the same tree: the device registers as with the name", RETURN_SUCCESS, 0x200000000ULL, 0x1cc0000000ULL - 0x200000000ULL);
+        CheckChipId("the same tree: the chip as with the name", RETURN_SUCCESS, 0x8132);
+
+        Machine.Uart = TestUartLeftOut;
+        BuildMachine(&Machine);
+        CheckUart("M4 MacBook Pro without uart0: no serial port", RETURN_NOT_FOUND, 0);
+    }
+    // uart0 is there and its address cannot be worked out: a fault of the tree, not a machine without a port
     BuildByHand(2, 2, 2, mRangesOfM4MacBookPro, sizeof(mRangesOfM4MacBookPro), NULL, 0, TRUE, 4);
-    CheckUart("uart0 without \"reg\"", RETURN_NOT_FOUND, 0);
+    CheckUart("uart0 without \"reg\"", RETURN_INVALID_PARAMETER, 0);
     BuildByHand(2, 2, 2, mRangesOfM4MacBookPro, sizeof(mRangesOfM4MacBookPro), Reg64, 12, TRUE, 4);
     CheckUart("a \"reg\" of 12 bytes", RETURN_INVALID_PARAMETER, 0);
     BuildByHand(2, 2, 2, NULL, 0, Reg64, sizeof(Reg64), TRUE, 4);
-    CheckUart("/arm-io without \"ranges\"", RETURN_NOT_FOUND, 0);
+    CheckUart("/arm-io without \"ranges\"", RETURN_INVALID_PARAMETER, 0);
     BuildByHand(2, 2, 2, mRangesOfM4MacBookPro, 100, Reg64, sizeof(Reg64), TRUE, 4);
     CheckUart("\"ranges\" that is not a whole number of entries", RETURN_INVALID_PARAMETER, 0);
     BuildByHand(0, 2, 2, mRangesOfM4MacBookPro, sizeof(mRangesOfM4MacBookPro), Reg64, sizeof(Reg64), TRUE, 4);
-    CheckUart("/arm-io without \"#address-cells\"", RETURN_NOT_FOUND, 0);
+    CheckUart("/arm-io without \"#address-cells\"", RETURN_INVALID_PARAMETER, 0);
     BuildByHand(2, 0, 2, mRangesOfM4MacBookPro, sizeof(mRangesOfM4MacBookPro), Reg64, sizeof(Reg64), TRUE, 4);
-    CheckUart("root without \"#address-cells\"", RETURN_NOT_FOUND, 0);
+    CheckUart("root without \"#address-cells\"", RETURN_INVALID_PARAMETER, 0);
     BuildByHand(2, 2, 0, mRangesOfM4MacBookPro, sizeof(mRangesOfM4MacBookPro), Reg64, sizeof(Reg64), TRUE, 4);
-    CheckUart("/arm-io without \"#size-cells\"", RETURN_NOT_FOUND, 0);
+    CheckUart("/arm-io without \"#size-cells\"", RETURN_INVALID_PARAMETER, 0);
     BuildByHand(3, 2, 2, mRangesOfM4MacBookPro, sizeof(mRangesOfM4MacBookPro), Reg64, sizeof(Reg64), TRUE, 4);
     CheckUart("three address cells", RETURN_INVALID_PARAMETER, 0);
     {
@@ -309,7 +327,7 @@ int main(void)
           Node(2, 0);
           Name("chosen");
           Number("chip-id", 0x8132);
-        CheckUart("no /arm-io", RETURN_NOT_FOUND, 0);
+        CheckUart("no /arm-io: no uart0, so no serial port", RETURN_NOT_FOUND, 0);
         CheckSpan("no /arm-io: no device registers either", RETURN_NOT_FOUND, 0, 0);
     }
 

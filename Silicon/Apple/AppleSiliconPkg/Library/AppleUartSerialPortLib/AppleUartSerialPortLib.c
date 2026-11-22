@@ -18,7 +18,24 @@
  * SiliconNT: the address of the port is not a build-time value. It is read from
  * the device tree at boot, and each flavour of this library learns it its own
  * way (AppleUartBase(), see AppleUartBase.h). While a module does not know the
- * address, nothing is written and SerialPortWrite() says so.
+ * address, and on a machine without a serial port, nothing is written and
+ * SerialPortWrite() says so.
+ *
+ * SiliconNT: a machine without a serial port (AppleUartBase() is 0: the device
+ * tree has no /arm-io/uart0, as when m1n1 runs the guest without a host) has
+ * nothing to set up, and SerialPortInitialize() answers RETURN_SUCCESS. Every
+ * module calls it through the constructor of its debug library, and the status
+ * code handler calls it too; on any other answer they ASSERT, which stops the
+ * firmware (MU_BASECORE ba9f76c: MdePkg/Library/BaseDebugLibSerialPort/DebugLib.c
+ * line 47 with the ASSERT_RETURN_ERROR the build puts after each constructor;
+ * MdePkg/Library/DxeRuntimeDebugLibSerialPort/DebugLib.c line 75;
+ * MdeModulePkg/Universal/StatusCodeHandler/RuntimeDxe/StatusCodeHandlerRuntimeDxe.c
+ * lines 81-82).
+ * SerialPortSetAttributes() is where the missing port shows: it answers
+ * RETURN_DEVICE_ERROR. SerialDxe sets the attributes when it starts and does not
+ * start on that answer (MdeModulePkg/Universal/SerialDxe/SerialIo.c lines 231,
+ * 339 and 552-555), so no Serial I/O protocol and no terminal stand for a port
+ * that is not there.
  */
 
 
@@ -50,9 +67,10 @@ EFI_STATUS EFIAPI SerialPortInitialize(VOID)
     UINT32 BaudRateConfig = AppleSerialPortCalculateBaudRateConfig();
     UINT64 UartBase = AppleUartBase();
 
+    // No port, nothing to set up (see the top of this file)
     if(UartBase == 0)
     {
-        return RETURN_DEVICE_ERROR;
+        return RETURN_SUCCESS;
     }
 
     SerialPortFlush();
@@ -257,5 +275,10 @@ RETURN_STATUS EFIAPI SerialPortSetAttributes(
     IN OUT EFI_STOP_BITS_TYPE *StopBits
 )
 {
+    // No port: keeps SerialDxe from starting (see the top of this file)
+    if(AppleUartBase() == 0)
+    {
+        return RETURN_DEVICE_ERROR;
+    }
     return RETURN_UNSUPPORTED;
 }

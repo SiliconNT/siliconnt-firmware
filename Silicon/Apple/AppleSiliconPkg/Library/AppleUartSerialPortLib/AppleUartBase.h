@@ -25,7 +25,8 @@
 #include <Base.h>
 
 /**
-  The address of the serial port, or 0 while this module does not know it.
+  The address of the serial port, or 0 while this module does not know it and
+  when there is none.
 **/
 UINT64
 AppleUartBase (

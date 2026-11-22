@@ -166,20 +166,23 @@ STATIC VOID ReserveAicToGic(IN CONST APPLE_BOOT_INFO *Info)
 //
 // SiliconNT: the boot arguments and the Apple device tree stay where the loader
 // put them. Tell everything that runs later where they are, and where the serial
-// port is (AppleGetBootInfo() in AppleDTLib reads this HOB; so do the serial port
-// libraries of the DXE phase).
+// port is, 0 when there is none (AppleGetBootInfo() in AppleDTLib reads this HOB;
+// so do the serial port libraries of the DXE phase).
 //
 // Called before MemoryPeim(), which reads the device registers and the cores
 // from the device tree through this HOB.
 //
 STATIC VOID PublishBootInfo(IN struct boot_args *BootArgs, OUT APPLE_BOOT_INFO *Info)
 {
+    RETURN_STATUS Status;
+
     Info->BootArgs       = BootArgs;
     Info->DeviceTree     = (dt_node_t *)((UINTN)BootArgs->devtree - BootArgs->virt_base + BootArgs->phys_base);
     Info->DeviceTreeSize = BootArgs->devtree_size;
 
-    // EarlySetup() has read the same tree for the same address, or nothing could be printed
-    if(RETURN_ERROR(AppleGetUartBase(Info, &Info->UartBase))) {
+    // EarlySetup() has read the same tree with the same result, or it would have stopped
+    Status = AppleGetUartBase(Info, &Info->UartBase);
+    if(RETURN_ERROR(Status) && Status != RETURN_NOT_FOUND) {
         DEBUG((EFI_D_INFO | EFI_D_LOAD | EFI_D_ERROR, "PrePi: /arm-io/uart0 of the device tree cannot be read any more; stopping here\n"));
         CpuDeadLoop();
     }

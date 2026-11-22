@@ -8,11 +8,15 @@
   (AcpiTableBuilder.c). The OEM revision of every table is the number of the
   chip, also from the device tree.
 
+  There is a DBG2 only when there is a serial port (Dbg2Wanted()). Without one,
+  when the device tree has no /arm-io/uart0 as when m1n1 runs the guest without
+  a host, the other four tables are the same as with it.
+
   The DSDT also describes the internal disk controller when the device tree and
   the table of interrupt numbers hold all a node needs (AnsNode.c). Otherwise the
   DSDT goes without it and the log says why; the firmware boots on as before.
 
-  All five tables are built before the first is installed: a device tree that
+  All tables are built before the first is installed: a device tree that
   cannot be used leaves the machine without ACPI tables and with the reason in
   the log, not with half of them.
 
@@ -38,7 +42,8 @@
 // Aff3, Aff2, Aff1 and Aff0 of MPIDR_EL1, which is what the MADT holds of it
 #define MPIDR_AFFINITY_MASK  0xFF00FFFFFFULL
 
-#define TABLE_COUNT  5
+// MADT, GTDT, FADT, DBG2 and DSDT; DBG2 only with a serial port
+#define MAX_TABLE_COUNT  5
 
 /**
   A copy of a table that is the same on every machine, with the number of the
@@ -119,7 +124,12 @@ AcpiPlatformEntryPoint (
   UINTN                    CpuCount;
   UINT32                   ChipId;
   UINT32                   CreatorRevision;
-  VOID                     *Tables[TABLE_COUNT];
+  BOOLEAN                  WithDbg2;
+  VOID                     *Madt;
+  VOID                     *Dbg2;
+  VOID                     *Dsdt;
+  VOID                     *Tables[MAX_TABLE_COUNT];
+  UINTN                    TableCount;
   UINTN                    Index;
   UINTN                    TableKey;
   UINT64                   BootMpidr;
@@ -171,25 +181,38 @@ AcpiPlatformEntryPoint (
     }
   }
 
-  DEBUG ((DEBUG_INFO, "AcpiPlatformDxe: chip 0x%x, %u cores, serial port at 0x%lx\n", ChipId, (UINT32)CpuCount, BootInfo->UartBase));
+  WithDbg2 = Dbg2Wanted (BootInfo->UartBase);
+  if (WithDbg2) {
+    DEBUG ((DEBUG_INFO, "AcpiPlatformDxe: chip 0x%x, %u cores, serial port at 0x%lx\n", ChipId, (UINT32)CpuCount, BootInfo->UartBase));
+  } else {
+    DEBUG ((DEBUG_INFO, "AcpiPlatformDxe: chip 0x%x, %u cores, no serial port: no DBG2\n", ChipId, (UINT32)CpuCount));
+  }
 
   FindAnsNode (BootInfo, &Ans);
   PrintAnsNode (&Ans);
   AnsInDsdt = Ans.Outcome == AnsNodeMade ? &Ans.Node : NULL;
 
   //
-  // Build
+  // Build. Tables lists them in the order they are installed in.
   //
   CreatorRevision = FixedPcdGet32 (PcdAcpiDefaultCreatorRevision);
 
-  Tables[0] = AllocatePool (MadtSize (CpuCount));
-  Tables[1] = CopyStaticTable (&gStaticGtdt.Header, ChipId);
-  Tables[2] = CopyStaticTable (&gStaticFadt.Header, ChipId);
-  Tables[3] = AllocatePool (Dbg2Size ());
-  Tables[4] = AllocatePool (DsdtSize (Cpus, CpuCount, AnsInDsdt));
+  Madt = AllocatePool (MadtSize (CpuCount));
+  Dbg2 = WithDbg2 ? AllocatePool (Dbg2Size ()) : NULL;
+  Dsdt = AllocatePool (DsdtSize (Cpus, CpuCount, AnsInDsdt));
+
+  TableCount           = 0;
+  Tables[TableCount++] = Madt;
+  Tables[TableCount++] = CopyStaticTable (&gStaticGtdt.Header, ChipId);
+  Tables[TableCount++] = CopyStaticTable (&gStaticFadt.Header, ChipId);
+  if (WithDbg2) {
+    Tables[TableCount++] = Dbg2;
+  }
+
+  Tables[TableCount++] = Dsdt;
 
   Status = EFI_SUCCESS;
-  for (Index = 0; Index < TABLE_COUNT; Index++) {
+  for (Index = 0; Index < TableCount; Index++) {
     if (Tables[Index] == NULL) {
       Status = EFI_OUT_OF_RESOURCES;
     }
@@ -203,13 +226,16 @@ AcpiPlatformEntryPoint (
                CpuCount,
                FixedPcdGet64 (PcdGicDistributorBase),
                FixedPcdGet64 (PcdGicRedistributorsBase),
-               Tables[0]
+               Madt
                );
   }
 
   if (!EFI_ERROR (Status)) {
-    Dbg2Build (ChipId, CreatorRevision, BootInfo->UartBase, Tables[3]);
-    Status = DsdtBuild (ChipId, CreatorRevision, Cpus, CpuCount, AnsInDsdt, Tables[4]);
+    if (WithDbg2) {
+      Dbg2Build (ChipId, CreatorRevision, BootInfo->UartBase, Dbg2);
+    }
+
+    Status = DsdtBuild (ChipId, CreatorRevision, Cpus, CpuCount, AnsInDsdt, Dsdt);
   }
 
   //
@@ -224,7 +250,7 @@ AcpiPlatformEntryPoint (
     Status = gBS->LocateProtocol (&gEfiAcpiTableProtocolGuid, NULL, (VOID **)&AcpiTable);
   }
 
-  for (Index = 0; !EFI_ERROR (Status) && Index < TABLE_COUNT; Index++) {
+  for (Index = 0; !EFI_ERROR (Status) && Index < TableCount; Index++) {
     Status = AcpiTable->InstallAcpiTable (
                           AcpiTable,
                           Tables[Index],
@@ -233,7 +259,7 @@ AcpiPlatformEntryPoint (
                           );
   }
 
-  for (Index = 0; Index < TABLE_COUNT; Index++) {
+  for (Index = 0; Index < TableCount; Index++) {
     if (Tables[Index] != NULL) {
       FreePool (Tables[Index]);
     }

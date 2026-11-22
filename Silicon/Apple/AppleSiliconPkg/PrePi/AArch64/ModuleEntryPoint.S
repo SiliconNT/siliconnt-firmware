@@ -48,7 +48,8 @@ ASM_FUNC(_ModuleEntryPoint)
   //
   // SiliconNT: the serial port is not set up here any more. Its address is in
   // the device tree, which EarlySetup (called by DiscoverDramFromDt, after the
-  // image has been relocated) reads; it sets the port up and prints the banner.
+  // image has been relocated) reads; if the tree names a port, it sets the port
+  // up and prints the banner.
   //
 
   //Use ADT to discover usable DRAM base/size

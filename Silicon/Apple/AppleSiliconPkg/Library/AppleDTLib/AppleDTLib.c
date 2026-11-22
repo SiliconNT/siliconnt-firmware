@@ -656,17 +656,23 @@ RETURN_STATUS AppleGetUartBase(IN CONST APPLE_BOOT_INFO *Info, OUT UINT64 *Base)
 
     *Base = 0;
 
-    Status = GetArmIo(Info, &Io);
-    if(RETURN_ERROR(Status))
-    {
-        return Status;
-    }
     Uart = dt_find(Info->DeviceTree, "/arm-io/uart0");
     if(Uart == NULL)
     {
         return RETURN_NOT_FOUND;
     }
-    return ReadArmIoReg(&Io, Uart, 0, Base, &Size);
+    Status = GetArmIo(Info, &Io);
+    if(!RETURN_ERROR(Status))
+    {
+        Status = ReadArmIoReg(&Io, Uart, 0, Base, &Size);
+    }
+    // The node is there, so whatever keeps its address from being known is a fault of the tree
+    if(RETURN_ERROR(Status) || *Base == 0)
+    {
+        *Base = 0;
+        return RETURN_INVALID_PARAMETER;
+    }
+    return RETURN_SUCCESS;
 }
 
 // A range ACPI can describe: not empty, its last byte inside the address space

@@ -136,6 +136,11 @@ int main(void)
     Check("M4 MacBook Pro: NVMe 0x4_c5cc_0000+0x60000, coprocessor 0x4_8160_0000+0x88000, SART 0x4_85c5_0000+0xc000, AIC 1018 and 1006",
           &mM4MacBookProWithAns, RETURN_SUCCESS, &mM4Ans);
 
+    // The node before it without a name, as m1n1 hands the tree over without a host
+    Machine      = mM4MacBookProWithAns;
+    Machine.Uart = TestUartNameCleared;
+    Check("the same with the name of uart0 cleared", &Machine, RETURN_SUCCESS, &mM4Ans);
+
     Ans                = mAnsOfM4MacBookPro;
     Ans.SecureBar      = FALSE;
     Expected           = mM4Ans;

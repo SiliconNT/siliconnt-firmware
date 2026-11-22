@@ -169,7 +169,7 @@ STATIC int Verdict(VOID)
 //     /not-a-core           a child without "cpu-id", which must not be taken
 //   /arm-io                 #address-cells 2, #size-cells 2, ranges
 //     /uart1                a "reg" that must not be taken
-//     /uart0                reg
+//     /uart0                reg; with its name cleared, or left out (Uart)
 //     /ans                  with a disk controller: nvme-interrupt-idx,
 //                           interrupt-parent, interrupts, name, reg,
 //                           nvme-secure-bar
@@ -207,6 +207,18 @@ typedef struct
     UINT32       Omit;
 } TEST_ANS;
 
+//
+// How the tree holds /arm-io/uart0
+//
+typedef enum
+{
+    TestUartNamed,          // as iBoot hands it over
+    TestUartNameCleared,    // as m1n1 hands it over when no host is attached: the
+                            // value of "name" all zero, its length kept
+                            // (SiliconNT docs/findings/0068, conclusion 7)
+    TestUartLeftOut         // not in the tree at all
+} TEST_UART;
+
 typedef struct
 {
     UINT32         ChipId;
@@ -218,6 +230,7 @@ typedef struct
     CONST TEST_ANS *Ans;            // NULL: no disk controller
     CONST UINT32   *AicToGic;       // the numbers of the table; NULL: no /chosen/memory-map
     UINT32         AicToGicCount;
+    TEST_UART      Uart;
 } TEST_MACHINE;
 
 //
@@ -269,6 +282,7 @@ STATIC VOID BuildMachine(IN CONST TEST_MACHINE *Machine)
     STATIC CONST UINT64 OtherUart[2] = { 0x1ad204000ULL, 0x4000 };
     STATIC CONST UINT64 OtherAns[2]  = { 0x2c5000000ULL, 0x60000 };
     STATIC CONST UINT32 OtherIrqs[5] = { 1, 2, 3, 4, 5 };
+    STATIC CONST CHAR8  ClearedName[sizeof("uart0")] = { 0 };
     UINTN               Index;
     CHAR8               CpuName[16];
     UINT32              *Table = (UINT32 *)mGuestMemory;
@@ -327,7 +341,7 @@ STATIC VOID BuildMachine(IN CONST TEST_MACHINE *Machine)
         Name("not-a-core");
         Number("reg", 0x7ff);
 
-      Node(4, 2 + AnsNodeCount(Machine->Ans));
+      Node(4, 1 + (Machine->Uart != TestUartLeftOut ? 1 : 0) + AnsNodeCount(Machine->Ans));
       Number("#address-cells", 2);
       Name("arm-io");
       Prop("ranges", Machine->RangeCount != 0 ? (CONST VOID *)Machine->Ranges : "", (UINT32)(Machine->RangeCount * sizeof(Machine->Ranges[0])));
@@ -335,9 +349,15 @@ STATIC VOID BuildMachine(IN CONST TEST_MACHINE *Machine)
         Node(2, 0);
         Name("uart1");
         Prop("reg", OtherUart, sizeof(OtherUart));
-        Node(2, 0);
-        Prop("reg", Machine->UartReg, sizeof(Machine->UartReg));
-        Name("uart0");
+        if(Machine->Uart != TestUartLeftOut) {
+            Node(2, 0);
+            Prop("reg", Machine->UartReg, sizeof(Machine->UartReg));
+            if(Machine->Uart == TestUartNameCleared) {
+                Prop("name", ClearedName, sizeof(ClearedName));
+            } else {
+                Name("uart0");
+            }
+        }
         if(Machine->Ans != NULL) {
             BuildAns(Machine->Ans);
         }

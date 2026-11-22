@@ -119,7 +119,9 @@ int dt_node_reg(dt_node_t *node, uint32_t idx, uint64_t *paddr, uint64_t *psize)
 // SiliconNT: where the loader left the boot arguments and the Apple device tree,
 // and the address of the serial port, which the entry code reads from the device
 // tree once (AppleGetUartBase) so that the serial port library of every later
-// module finds it without reading the tree itself.
+// module finds it without reading the tree itself. UartBase is 0 when the tree
+// names no serial port: the firmware then writes to no port and installs no
+// DBG2.
 // The entry code (PrePi) publishes this in a HOB, gAppleSiliconPkgBootInfoHobGuid;
 // AppleGetBootInfo() returns the copy in the HOB.
 //
@@ -193,6 +195,13 @@ RETURN_STATUS AppleGetCpus(IN CONST APPLE_BOOT_INFO *Info, OUT APPLE_CPU *Cpus, 
 // The address of the serial port: the first "reg" entry of /arm-io/uart0, taken
 // through "ranges" of /arm-io the way m1n1 does it (an address no range covers
 // stays as it is). The EL2 layer emulates the port at this address.
+//
+// RETURN_NOT_FOUND only when the tree has no /arm-io/uart0: the machine has no
+// serial port. m1n1 hands over such a tree when no host is attached: it clears
+// the value of the node's "name", which keeps its length and so the size of the
+// tree. RETURN_INVALID_PARAMETER whenever the node is there and its address
+// cannot be worked out, whatever is missing; also for an address of 0, which
+// APPLE_BOOT_INFO uses for "no serial port".
 //
 RETURN_STATUS AppleGetUartBase(IN CONST APPLE_BOOT_INFO *Info, OUT UINT64 *Base);
 

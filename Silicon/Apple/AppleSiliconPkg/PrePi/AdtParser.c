@@ -31,6 +31,7 @@ EarlySetup (
   struct boot_args *BootArgs = (struct boot_args *)BootArgsAddr;
   APPLE_BOOT_INFO  Info;
   UINT64           UartBase;
+  RETURN_STATUS    Status;
 
   Info.BootArgs       = BootArgs;
   Info.DeviceTree     = (dt_node_t *)((UINTN)BootArgs->devtree - BootArgs->virt_base + BootArgs->phys_base);
@@ -39,18 +40,30 @@ EarlySetup (
 
   //
   // SiliconNT: the address of the serial port comes from the device tree, so
-  // nothing can be printed before this point, and nothing at all if the tree is
-  // corrupt or does not name the port: the entry code then stops here without a
-  // word. Going on would take the memory base and size from the build-time
-  // defaults, which describe no real machine.
+  // nothing can be printed before this point.
   //
-  if(dt_check(Info.DeviceTree, Info.DeviceTreeSize, NULL) != 0 || RETURN_ERROR(AppleGetUartBase(&Info, &UartBase))) {
+  // A corrupt tree stops the entry code here without a word. Going on would take
+  // the memory base and size from the build-time defaults, which describe no
+  // real machine. So does a tree whose /arm-io/uart0 is there but gives no
+  // address that can be used (AppleGetUartBase): that is a fault of the tree.
+  //
+  // A tree without /arm-io/uart0 is a machine without a serial port: m1n1 hands
+  // over such a tree when no host is attached. The library is told no address,
+  // so the firmware prints nothing at all, and boots on.
+  //
+  if(dt_check(Info.DeviceTree, Info.DeviceTreeSize, NULL) != 0) {
+    CpuDeadLoop();
+  }
+  Status = AppleGetUartBase(&Info, &UartBase);
+  if(RETURN_ERROR(Status) && Status != RETURN_NOT_FOUND) {
     CpuDeadLoop();
   }
 
-  AppleUartSerialPortSetBase(UartBase);
-  InitializeUART();
-  DEBUG((EFI_D_INFO | EFI_D_LOAD, "Serial port at 0x%llx, from /arm-io/uart0 of the device tree\n", UartBase));
+  if(Status == RETURN_SUCCESS) {
+    AppleUartSerialPortSetBase(UartBase);
+    InitializeUART();
+    DEBUG((EFI_D_INFO | EFI_D_LOAD, "Serial port at 0x%llx, from /arm-io/uart0 of the device tree\n", UartBase));
+  }
 
   *SystemMemoryBase = BootArgs->phys_base;
   *SystemMemorySize = BootArgs->mem_size;

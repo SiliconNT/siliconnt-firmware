@@ -207,6 +207,14 @@ typedef struct {
 
 #pragma pack ()
 
+BOOLEAN
+Dbg2Wanted (
+  IN UINT64  UartBase
+  )
+{
+  return UartBase != 0;
+}
+
 UINTN
 Dbg2Size (
   VOID

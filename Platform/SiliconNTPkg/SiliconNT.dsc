@@ -361,8 +361,9 @@
   FatPkg/EnhancedFatDxe/Fat.inf
   AppleSiliconPkg/Drivers/BootRamdiskHelperDxe/BootRamdiskHelperDxe.inf
 
-  # ACPI and SMBIOS. The platform's own driver builds MADT, DBG2 and DSDT from the
-  # device tree and installs them with the GTDT and the FADT
+  # ACPI and SMBIOS. The platform's own driver builds MADT, DSDT and, when there
+  # is a serial port, DBG2 from the device tree and installs them with the GTDT
+  # and the FADT
   MdeModulePkg/Universal/Acpi/AcpiTableDxe/AcpiTableDxe.inf
   SiliconNTPkg/Drivers/AcpiPlatformDxe/AcpiPlatformDxe.inf
   MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf

@@ -17,7 +17,7 @@ controller. What it expects from the EL2 layer:
 | Timer | the virtual timer, INTID 27 |
 | PSCI | `hvc #0` (only used by `ResetSystem`) |
 | WFI | trapped by the EL2 layer |
-| Serial port | the one m1n1 emulates, at the address of `/arm-io/uart0` in the device tree |
+| Serial port | the one m1n1 emulates, at the address of `/arm-io/uart0` in the device tree. A tree without that node (m1n1 without a host) means no serial port: the firmware writes to none and installs no DBG2 |
 | Entry | start of the image, `x0` = address of the Apple boot arguments |
 
 What differs between machines is read from the Apple device tree at boot, not built in:
@@ -30,7 +30,7 @@ What differs between machines is read from the Apple device tree at boot, not bu
 | Number of the chip (the OEM revision of the ACPI tables) | `chip-id` of `/chosen` |
 | Memory, framebuffer | the boot arguments |
 
-MADT, DBG2 and DSDT are built from these at boot; GTDT and FADT are the same everywhere.
+MADT, DSDT and, with a serial port, DBG2 are built from these at boot; GTDT and FADT are the same everywhere.
 
 The design, and the evidence behind each of these, is in the SiliconNT repository
 (`docs/DESIGN.md`, `docs/findings/`).

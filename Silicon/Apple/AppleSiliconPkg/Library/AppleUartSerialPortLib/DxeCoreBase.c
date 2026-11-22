@@ -10,7 +10,13 @@
 
 #include "AppleUartBase.h"
 
-STATIC UINT64  mUartBase;
+STATIC UINT64   mUartBase;
+
+//
+// Whether mUartBase holds what the HOB says. Without a serial port the HOB says
+// 0, and the core must not walk the HOB list again at every write.
+//
+STATIC BOOLEAN  mUartBaseRead;
 
 UINT64
 AppleUartBase (
@@ -19,14 +25,15 @@ AppleUartBase (
 {
   VOID  *Hob;
 
-  if (mUartBase == 0) {
+  if (!mUartBaseRead) {
     //
     // The HOB library of the DXE core needs no constructor: the entry point of
     // the core stores the HOB list before anything else runs.
     //
     Hob = GetFirstGuidHob (&gAppleSiliconPkgBootInfoHobGuid);
     if (Hob != NULL) {
-      mUartBase = ((APPLE_BOOT_INFO *)GET_GUID_HOB_DATA (Hob))->UartBase;
+      mUartBase     = ((APPLE_BOOT_INFO *)GET_GUID_HOB_DATA (Hob))->UartBase;
+      mUartBaseRead = TRUE;
     }
   }
 

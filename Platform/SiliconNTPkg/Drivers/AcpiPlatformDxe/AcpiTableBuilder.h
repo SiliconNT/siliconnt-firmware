@@ -50,6 +50,18 @@ MadtBuild (
   );
 
 /**
+  Whether the firmware installs a DBG2: only when there is a serial port, at
+  UartBase. UartBase is 0 when the device tree has no /arm-io/uart0, as when m1n1
+  runs the guest without a host. Then there is no port for the Windows kernel
+  debugger; without a DBG2, Windows' loader finds no debug device, loads kd.dll
+  instead and touches no device (SiliconNT docs/findings/0068, conclusion 6).
+**/
+BOOLEAN
+Dbg2Wanted (
+  IN UINT64  UartBase
+  );
+
+/**
   Debug Port Table 2: the serial port at UartBase, the one the EL2 layer emulates,
   for the Windows kernel debugger.
 **/

@@ -1,9 +1,11 @@
 /** @file
   Whether the DSDT describes the internal disk controller, and with what: from the
-  device tree (AppleGetAns()) and the table of interrupt numbers m1n1 hands over
-  (AppleGetAicToGic(), AppleFindGicInterrupt()).
+  device tree (AppleGetAns(), AppleGetAnsSartVersion(), AppleGetAnsPmgr()) and the
+  table of interrupt numbers m1n1 hands over (AppleGetAicToGic(),
+  AppleFindGicInterrupt()).
 
-  The node is made only when all of it is there. Without the device, without a
+  The node is made only when all of it is there. Without the device, without the
+  version of its SART, without its register in the power manager, without a
   usable table, or with a line the table does not hold, there is no node and the
   DSDT is the one without it; the outcome says which.
 
@@ -21,6 +23,8 @@
 typedef enum {
   AnsNodeMade,              // Node is the node
   AnsNodeNoDevice,          // AppleGetAns() failed with Status
+  AnsNodeNoSartVersion,     // AppleGetAnsSartVersion() failed with Status
+  AnsNodeNoPmgr,            // AppleGetAnsPmgr() failed with Status
   AnsNodeNoTable,           // AppleGetAicToGic() failed with Status
   AnsNodeNvmeLineMissing,   // the table does not hold Device.NvmeAic
   AnsNodeMailboxLineMissing // the table does not hold Device.MailboxAic
@@ -28,7 +32,7 @@ typedef enum {
 
 typedef struct {
   ANS_NODE_OUTCOME    Outcome;
-  RETURN_STATUS       Status;   // of AppleGetAns() or AppleGetAicToGic()
+  RETURN_STATUS       Status;   // of the step that failed
   APPLE_ANS           Device;   // what the tree says: all 0 with AnsNodeNoDevice
   DSDT_ANS            Node;     // all 0 unless AnsNodeMade
 } ANS_NODE;

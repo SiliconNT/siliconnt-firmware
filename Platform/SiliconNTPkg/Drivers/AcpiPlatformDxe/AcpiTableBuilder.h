@@ -79,18 +79,20 @@ Dbg2Build (
   );
 
 /**
-  The internal disk controller as the DSDT describes it: three register ranges,
+  The internal disk controller as the DSDT describes it: four register ranges,
   in this order in _CRS, and two GIC interrupt numbers (GSIVs), controller's
-  first. SecureBar puts a _DSD with the property "nvme-secure-bar" into the
-  node. AnsNode.h says where the values come from.
+  first. Its _DSD holds "nvme-secure-bar" when SecureBar is set, then
+  "sart-version" with SartVersion. AnsNode.h says where the values come from.
 **/
 typedef struct {
   APPLE_MMIO_RANGE    Nvme;
   APPLE_MMIO_RANGE    Coprocessor;
   APPLE_MMIO_RANGE    Sart;
+  APPLE_MMIO_RANGE    Pmgr;           // the controller's register in the power manager
   UINT32              NvmeGsiv;
   UINT32              MailboxGsiv;
   BOOLEAN             SecureBar;
+  UINT32              SartVersion;
 } DSDT_ANS;
 
 //

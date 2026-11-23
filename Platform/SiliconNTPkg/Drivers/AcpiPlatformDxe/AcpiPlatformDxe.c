@@ -80,7 +80,7 @@ PrintAnsNode (
       DEBUG ((
         DEBUG_INFO,
         "AcpiPlatformDxe: disk controller ANS0, %a: NVMe 0x%lx+0x%lx, coprocessor 0x%lx+0x%lx, SART 0x%lx+0x%lx, "
-        "controller AIC %u is GIC %u, mailbox AIC %u is GIC %u, %a\n",
+        "power manager 0x%lx+0x%lx, controller AIC %u is GIC %u, mailbox AIC %u is GIC %u, %a, SART version %u\n",
         DSDT_ANS_HID,
         Ans->Node.Nvme.Base,
         Ans->Node.Nvme.Size,
@@ -88,15 +88,24 @@ PrintAnsNode (
         Ans->Node.Coprocessor.Size,
         Ans->Node.Sart.Base,
         Ans->Node.Sart.Size,
+        Ans->Node.Pmgr.Base,
+        Ans->Node.Pmgr.Size,
         Ans->Device.NvmeAic,
         Ans->Node.NvmeGsiv,
         Ans->Device.MailboxAic,
         Ans->Node.MailboxGsiv,
-        Ans->Node.SecureBar ? "nvme-secure-bar" : "no nvme-secure-bar"
+        Ans->Node.SecureBar ? "nvme-secure-bar" : "no nvme-secure-bar",
+        Ans->Node.SartVersion
         ));
       break;
     case AnsNodeNoDevice:
       DEBUG ((DEBUG_INFO, "AcpiPlatformDxe: no disk controller node: /arm-io/ans or /arm-io/sart-ans in the device tree cannot be read: %r\n", Ans->Status));
+      break;
+    case AnsNodeNoSartVersion:
+      DEBUG ((DEBUG_WARN, "AcpiPlatformDxe: no disk controller node: the version of its SART cannot be read from /arm-io/sart-ans: %r\n", Ans->Status));
+      break;
+    case AnsNodeNoPmgr:
+      DEBUG ((DEBUG_WARN, "AcpiPlatformDxe: no disk controller node: its register in the power manager cannot be found in the device tree: %r\n", Ans->Status));
       break;
     case AnsNodeNoTable:
       DEBUG ((DEBUG_INFO, "AcpiPlatformDxe: no disk controller node: no AIC-to-GIC table to use: %r\n", Ans->Status));

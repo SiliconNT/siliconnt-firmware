@@ -10,9 +10,9 @@
   compiler makes of that ASL.
 
   The node of the internal disk controller (Drivers/AcpiPlatformDxe/AnsNode.c):
-  from the M4 MacBook Pro's tree with its table of interrupt numbers, the values
-  it must have; from trees that lack something, no node and the DSDT of the
-  processors alone, the static one.
+  from the M4 MacBook Pro's tree with its power manager and its table of
+  interrupt numbers, the values it must have; from trees that lack something, no
+  node and the DSDT of the processors alone, the static one.
 
   Without a serial port (the tree has no /arm-io/uart0, as m1n1 hands it over
   when no host is attached): no DBG2, and the MADT and the DSDT are the same as
@@ -247,7 +247,7 @@ STATIC VOID CheckDbg2(IN CONST CHAR8 *What, IN CONST TEST_MACHINE *Machine, IN U
 //
 STATIC UINTN WriteAnsAsl(OUT CHAR8 *Asl, IN UINTN Room, IN CONST DSDT_ANS *Ans)
 {
-    CONST APPLE_MMIO_RANGE *Ranges[3] = { &Ans->Nvme, &Ans->Coprocessor, &Ans->Sart };
+    CONST APPLE_MMIO_RANGE *Ranges[4] = { &Ans->Nvme, &Ans->Coprocessor, &Ans->Sart, &Ans->Pmgr };
     UINTN                  Used;
     UINTN                  Index;
 
@@ -268,14 +268,19 @@ STATIC UINTN WriteAnsAsl(OUT CHAR8 *Asl, IN UINTN Room, IN CONST DSDT_ANS *Ans)
                      "        Interrupt (ResourceConsumer, Level, ActiveHigh, Exclusive) { %u }\n"
                      "      })\n",
                      (unsigned)Ans->NvmeGsiv, (unsigned)Ans->MailboxGsiv);
+    Used += snprintf(Asl + Used, Room - Used,
+                     "      Name (_DSD, Package () {\n"
+                     "        ToUUID (\"daffd814-6eba-4d8c-8a91-bc9bbf4aa301\"),\n"
+                     "        Package () {\n");
     if(Ans->SecureBar) {
-        Used += snprintf(Asl + Used, Room - Used,
-                         "      Name (_DSD, Package () {\n"
-                         "        ToUUID (\"daffd814-6eba-4d8c-8a91-bc9bbf4aa301\"),\n"
-                         "        Package () { Package (2) { \"nvme-secure-bar\", 1 } }\n"
-                         "      })\n");
+        Used += snprintf(Asl + Used, Room - Used, "          Package (2) { \"nvme-secure-bar\", 1 },\n");
     }
-    Used += snprintf(Asl + Used, Room - Used, "    }\n");
+    Used += snprintf(Asl + Used, Room - Used,
+                     "          Package (2) { \"sart-version\", %u }\n"
+                     "        }\n"
+                     "      })\n"
+                     "    }\n",
+                     (unsigned)Ans->SartVersion);
     return Used;
 }
 
@@ -333,13 +338,16 @@ STATIC VOID WriteDsdtOfNumbers(IN CONST CHAR8 *Name, IN CONST UINT32 *Numbers, I
 //
 // The disk controller's node the M4 MacBook Pro must get: the registers of
 // /arm-io/ans and /arm-io/sart-ans (SiliconNT findings/0057, conclusion 20, and
-// findings/0062), AIC 1018 and 1006 as GIC 258 and 257, "nvme-secure-bar"
+// findings/0062), the controller's register in the power manager at
+// 0x3_8070_0538, four bytes (findings/0071, conclusion 31), AIC 1018 and 1006 as
+// GIC 258 and 257, "nvme-secure-bar", SART version 3 (conclusion 32)
 //
 STATIC CONST DSDT_ANS mM4Node = {
     { 0x4c5cc0000ULL, 0x60000 },
     { 0x481600000ULL, 0x88000 },
     { 0x485c50000ULL, 0xc000 },
-    258, 257, TRUE
+    { 0x380700538ULL, 4 },
+    258, 257, TRUE, 3
 };
 
 STATIC BOOLEAN SameNode(IN CONST DSDT_ANS *A, IN CONST DSDT_ANS *B)
@@ -347,7 +355,9 @@ STATIC BOOLEAN SameNode(IN CONST DSDT_ANS *A, IN CONST DSDT_ANS *B)
     return A->Nvme.Base == B->Nvme.Base && A->Nvme.Size == B->Nvme.Size &&
            A->Coprocessor.Base == B->Coprocessor.Base && A->Coprocessor.Size == B->Coprocessor.Size &&
            A->Sart.Base == B->Sart.Base && A->Sart.Size == B->Sart.Size &&
-           A->NvmeGsiv == B->NvmeGsiv && A->MailboxGsiv == B->MailboxGsiv && A->SecureBar == B->SecureBar;
+           A->Pmgr.Base == B->Pmgr.Base && A->Pmgr.Size == B->Pmgr.Size &&
+           A->NvmeGsiv == B->NvmeGsiv && A->MailboxGsiv == B->MailboxGsiv && A->SecureBar == B->SecureBar &&
+           A->SartVersion == B->SartVersion;
 }
 
 //
@@ -372,11 +382,12 @@ STATIC VOID CheckAnsNode(IN CONST CHAR8 *Name, IN CONST TEST_MACHINE *Machine, I
     memset(&Ans, 0x5a, sizeof(Ans));
     FindAnsNode(BuiltTree(), &Ans);
     if(!Expect(Ans.Outcome == ExpectedOutcome && SameNode(&Ans.Node, ExpectedNode != NULL ? ExpectedNode : &Zero), Line)) {
-        printf("      outcome %d status 0x%llx nvme 0x%llx+0x%llx coprocessor 0x%llx+0x%llx sart 0x%llx+0x%llx gsiv %u %u secure-bar %d\n",
+        printf("      outcome %d status 0x%llx nvme 0x%llx+0x%llx coprocessor 0x%llx+0x%llx sart 0x%llx+0x%llx pmgr 0x%llx+0x%llx gsiv %u %u secure-bar %d sart-version %u\n",
                (int)Ans.Outcome, (unsigned long long)Ans.Status, (unsigned long long)Ans.Node.Nvme.Base, (unsigned long long)Ans.Node.Nvme.Size,
                (unsigned long long)Ans.Node.Coprocessor.Base, (unsigned long long)Ans.Node.Coprocessor.Size,
                (unsigned long long)Ans.Node.Sart.Base, (unsigned long long)Ans.Node.Sart.Size,
-               (unsigned)Ans.Node.NvmeGsiv, (unsigned)Ans.Node.MailboxGsiv, (int)Ans.Node.SecureBar);
+               (unsigned long long)Ans.Node.Pmgr.Base, (unsigned long long)Ans.Node.Pmgr.Size,
+               (unsigned)Ans.Node.NvmeGsiv, (unsigned)Ans.Node.MailboxGsiv, (int)Ans.Node.SecureBar, (unsigned)Ans.Node.SartVersion);
         return;
     }
     WriteDsdt(Name, Cpus, Count, Ans.Outcome == AnsNodeMade ? &Ans.Node : NULL, ChipId);
@@ -496,6 +507,36 @@ STATIC VOID CheckAnsNodes(VOID)
     Machine  = M4With(&Ans, mAicToGicOfM4MacBookPro, ARRAY_SIZE(mAicToGicOfM4MacBookPro));
     CheckAnsNode("no-node-no-sart", &Machine, AnsNodeNoDevice, NULL);
 
+    Ans.Omit = OMIT_SART_VERSION;
+    Machine  = M4With(&Ans, mAicToGicOfM4MacBookPro, ARRAY_SIZE(mAicToGicOfM4MacBookPro));
+    CheckAnsNode("no-node-no-sart-version", &Machine, AnsNodeNoSartVersion, NULL);
+    CheckNoNodeIsStatic("sart-ans without \"sart-version\": the static DSDT of 816ea14", &Machine);
+
+    //
+    // The power manager: none, no entry for the controller, two
+    //
+    {
+        UINT8     Devices[sizeof(mPmgrDevicesOfM4MacBookPro)];
+        TEST_PMGR Pmgr = mPmgrOfM4MacBookPro;
+
+        Machine      = mM4MacBookProWithAns;
+        Machine.Pmgr = NULL;
+        CheckAnsNode("no-node-no-power-manager", &Machine, AnsNodeNoPmgr, NULL);
+        CheckNoNodeIsStatic("no /arm-io/pmgr: the static DSDT of 816ea14", &Machine);
+
+        memcpy(Devices, mPmgrDevicesOfM4MacBookPro, sizeof(Devices));
+        memcpy(Devices + PMGR_DEVICE_INDEX_ANS * 48 + 32, "ANX", 3);
+        Pmgr.Devices = Devices;
+        Machine.Pmgr = &Pmgr;
+        CheckAnsNode("no-node-no-ans-in-the-power-manager", &Machine, AnsNodeNoPmgr, NULL);
+        CheckNoNodeIsStatic("no entry ANS or ANS2 in \"devices\": the static DSDT of 816ea14", &Machine);
+
+        memcpy(Devices + PMGR_DEVICE_INDEX_ANS * 48 + 32, "ANS", 3);
+        memcpy(Devices + 3 * 48 + 32, "ANS2\0\0\0\0", 8);
+        CheckAnsNode("no-node-ans-and-ans2", &Machine, AnsNodeNoPmgr, NULL);
+        CheckNoNodeIsStatic("entries ANS and ANS2 in \"devices\": the static DSDT of 816ea14", &Machine);
+    }
+
     //
     // The node in other DSDTs: alone, after 32 cores, at the top of the address space
     //
@@ -509,10 +550,22 @@ STATIC VOID CheckAnsNodes(VOID)
     Node.Nvme.Base        = 0xfffffffffffa0000ULL;
     Node.Coprocessor.Base = 0;
     Node.Coprocessor.Size = 1;
+    Node.Pmgr.Base        = 0xfffffffffffffffcULL;
     Node.NvmeGsiv         = 1019;
     Node.MailboxGsiv      = 32;
     Node.SecureBar        = FALSE;
+    Node.SartVersion      = 0;
     WriteDsdtOfNumbers("ans-edges", (CONST UINT32[]){ 6 }, 1, &Node);
+
+    // SART versions the ASL compiler writes as One, a word, a double word
+    Node             = mM4Node;
+    Node.SartVersion = 1;
+    WriteDsdtOfNumbers("ans-sart-version-1", NULL, 0, &Node);
+    Node.SartVersion = 0x100;
+    WriteDsdtOfNumbers("ans-sart-version-word", NULL, 0, &Node);
+    Node.SecureBar   = FALSE;
+    Node.SartVersion = 0xffffffff;
+    WriteDsdtOfNumbers("ans-sart-version-dword", NULL, 0, &Node);
 }
 
 STATIC VOID CheckAgainstStatic(VOID)
@@ -639,6 +692,12 @@ STATIC VOID CheckRefusals(VOID)
         Node           = mM4Node;
         Node.Sart.Size = 0;
         Expect(DsdtBuild(0x8132, 1, Cpus, 4, &Node, mTable) == RETURN_INVALID_PARAMETER && mTable[0] == 0xa5, "DSDT: an empty SART range is refused");
+        Node           = mM4Node;
+        Node.Pmgr.Size = 0;
+        Expect(DsdtBuild(0x8132, 1, Cpus, 4, &Node, mTable) == RETURN_INVALID_PARAMETER && mTable[0] == 0xa5, "DSDT: an empty power manager range is refused");
+        Node.Pmgr.Base = 0xfffffffffffffffdULL;
+        Node.Pmgr.Size = 4;
+        Expect(DsdtBuild(0x8132, 1, Cpus, 4, &Node, mTable) == RETURN_INVALID_PARAMETER && mTable[0] == 0xa5, "DSDT: a power manager range past the top of the address space is refused");
         Node                  = mM4Node;
         Node.Coprocessor.Base = 0;
         Node.Coprocessor.Size = 0;

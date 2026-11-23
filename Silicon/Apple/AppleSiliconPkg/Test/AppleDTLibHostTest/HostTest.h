@@ -42,6 +42,11 @@ INTN EFIAPI AsciiStrnCmp(IN CONST CHAR8 *First, IN CONST CHAR8 *Second, IN UINTN
     return strncmp(First, Second, Length);
 }
 
+UINTN EFIAPI AsciiStrnLenS(IN CONST CHAR8 *String, IN UINTN MaxSize)
+{
+    return strnlen(String, MaxSize);
+}
+
 CHAR8 *EFIAPI AsciiStrStr(IN CONST CHAR8 *String, IN CONST CHAR8 *SearchString)
 {
     return (CHAR8 *)strstr(String, SearchString);
@@ -172,9 +177,12 @@ STATIC int Verdict(VOID)
 //     /uart0                reg; with its name cleared, or left out (Uart)
 //     /ans                  with a disk controller: nvme-interrupt-idx,
 //                           interrupt-parent, interrupts, name, reg,
-//                           nvme-secure-bar
+//                           nvme-secure-bar, clock-gates
 //       /iop-ans-nub        a "reg" that must not be taken
-//     /sart-ans             reg
+//     /sart-ans             reg, sart-version, compatible
+//     /pmgr                 with a power manager: compatible, reg, ps-regs or
+//                           ps-groups, devices
+//     /pmgr-child           the same, when the machine has one
 //
 typedef struct
 {
@@ -193,6 +201,8 @@ typedef struct
 #define OMIT_ANS_INTERRUPT_IDX  BIT3
 #define OMIT_SART               BIT4    // /arm-io/sart-ans
 #define OMIT_SART_REG           BIT5
+#define OMIT_SART_VERSION       BIT6
+#define OMIT_ANS_CLOCK_GATES    BIT7
 
 typedef struct
 {
@@ -205,7 +215,34 @@ typedef struct
     CONST UINT64 (*SartReg)[2];
     UINT32       SartRegLength;
     UINT32       Omit;
+    CONST VOID   *SartVersion;      // "sart-version" of sart-ans
+    UINT32       SartVersionLength;
+    CONST CHAR8  *SartCompatible;   // "compatible" of sart-ans: strings, each ended by a zero; NULL leaves it out
+    UINT32       SartCompatibleLength;
+    CONST UINT32 *ClockGates;       // "clock-gates" of ans
+    UINT32       ClockGatesLength;
 } TEST_ANS;
+
+//
+// A power manager node. Omit leaves out what its bits name.
+//
+#define OMIT_PMGR_REG           BIT0
+#define OMIT_PMGR_GROUPS        BIT1
+#define OMIT_PMGR_DEVICES       BIT2
+
+typedef struct
+{
+    CONST CHAR8  *Compatible;       // strings, each ended by a zero
+    UINT32       CompatibleLength;
+    CONST UINT64 (*Reg)[2];         // address on the bus, size
+    UINT32       RegLength;
+    CONST UINT32 *Groups;           // "ps-regs", or "ps-groups" with ByGroup
+    UINT32       GroupsLength;
+    BOOLEAN      ByGroup;
+    CONST UINT8  *Devices;          // "devices", 48 bytes an entry
+    UINT32       DevicesLength;
+    UINT32       Omit;
+} TEST_PMGR;
 
 //
 // How the tree holds /arm-io/uart0
@@ -231,6 +268,8 @@ typedef struct
     CONST UINT32   *AicToGic;       // the numbers of the table; NULL: no /chosen/memory-map
     UINT32         AicToGicCount;
     TEST_UART      Uart;
+    CONST TEST_PMGR *Pmgr;          // /arm-io/pmgr; NULL: none
+    CONST TEST_PMGR *PmgrChild;     // /arm-io/pmgr-child; NULL: none
 } TEST_MACHINE;
 
 //
@@ -243,7 +282,10 @@ STATIC VOID BuildAns(IN CONST TEST_ANS *Ans)
 
     if((Ans->Omit & OMIT_ANS) == 0) {
         Node(3 + ((Ans->Omit & OMIT_ANS_INTERRUPT_IDX) == 0 ? 1 : 0) + ((Ans->Omit & OMIT_ANS_INTERRUPTS) == 0 ? 1 : 0) +
-             ((Ans->Omit & OMIT_ANS_REG) == 0 ? 1 : 0) + (Ans->SecureBar ? 1 : 0), 1);
+             ((Ans->Omit & OMIT_ANS_REG) == 0 ? 1 : 0) + (Ans->SecureBar ? 1 : 0) + ((Ans->Omit & OMIT_ANS_CLOCK_GATES) == 0 ? 1 : 0), 1);
+        if((Ans->Omit & OMIT_ANS_CLOCK_GATES) == 0) {
+            Prop("clock-gates", Ans->ClockGatesLength != 0 ? (CONST VOID *)Ans->ClockGates : "", Ans->ClockGatesLength);
+        }
         if((Ans->Omit & OMIT_ANS_INTERRUPT_IDX) == 0) {
             Number("nvme-interrupt-idx", Ans->NvmeInterruptIdx);
         }
@@ -264,11 +306,38 @@ STATIC VOID BuildAns(IN CONST TEST_ANS *Ans)
           Prop("reg", NubReg, sizeof(NubReg));
     }
     if((Ans->Omit & OMIT_SART) == 0) {
-        Node(1 + ((Ans->Omit & OMIT_SART_REG) == 0 ? 1 : 0), 0);
+        Node(1 + ((Ans->Omit & OMIT_SART_REG) == 0 ? 1 : 0) + ((Ans->Omit & OMIT_SART_VERSION) == 0 ? 1 : 0) +
+             (Ans->SartCompatible != NULL ? 1 : 0), 0);
         Name("sart-ans");
+        if(Ans->SartCompatible != NULL) {
+            Prop("compatible", Ans->SartCompatible, Ans->SartCompatibleLength);
+        }
         if((Ans->Omit & OMIT_SART_REG) == 0) {
             Prop("reg", Ans->SartRegLength != 0 ? (CONST VOID *)Ans->SartReg : "", Ans->SartRegLength);
         }
+        if((Ans->Omit & OMIT_SART_VERSION) == 0) {
+            Prop("sart-version", Ans->SartVersionLength != 0 ? Ans->SartVersion : "", Ans->SartVersionLength);
+        }
+    }
+}
+
+//
+// A power manager node under /arm-io
+//
+STATIC VOID BuildPmgr(IN CONST TEST_PMGR *Pmgr, IN CONST CHAR8 *NodeName)
+{
+    Node(2 + ((Pmgr->Omit & OMIT_PMGR_REG) == 0 ? 1 : 0) + ((Pmgr->Omit & OMIT_PMGR_GROUPS) == 0 ? 1 : 0) +
+         ((Pmgr->Omit & OMIT_PMGR_DEVICES) == 0 ? 1 : 0), 0);
+    Name(NodeName);
+    Prop("compatible", Pmgr->Compatible, Pmgr->CompatibleLength);
+    if((Pmgr->Omit & OMIT_PMGR_GROUPS) == 0) {
+        Prop(Pmgr->ByGroup ? "ps-groups" : "ps-regs", Pmgr->GroupsLength != 0 ? (CONST VOID *)Pmgr->Groups : "", Pmgr->GroupsLength);
+    }
+    if((Pmgr->Omit & OMIT_PMGR_REG) == 0) {
+        Prop("reg", Pmgr->RegLength != 0 ? (CONST VOID *)Pmgr->Reg : "", Pmgr->RegLength);
+    }
+    if((Pmgr->Omit & OMIT_PMGR_DEVICES) == 0) {
+        Prop("devices", Pmgr->DevicesLength != 0 ? (CONST VOID *)Pmgr->Devices : "", Pmgr->DevicesLength);
     }
 }
 
@@ -341,7 +410,8 @@ STATIC VOID BuildMachine(IN CONST TEST_MACHINE *Machine)
         Name("not-a-core");
         Number("reg", 0x7ff);
 
-      Node(4, 1 + (Machine->Uart != TestUartLeftOut ? 1 : 0) + AnsNodeCount(Machine->Ans));
+      Node(4, 1 + (Machine->Uart != TestUartLeftOut ? 1 : 0) + (Machine->Pmgr != NULL ? 1 : 0) + (Machine->PmgrChild != NULL ? 1 : 0) +
+              AnsNodeCount(Machine->Ans));
       Number("#address-cells", 2);
       Name("arm-io");
       Prop("ranges", Machine->RangeCount != 0 ? (CONST VOID *)Machine->Ranges : "", (UINT32)(Machine->RangeCount * sizeof(Machine->Ranges[0])));
@@ -358,8 +428,14 @@ STATIC VOID BuildMachine(IN CONST TEST_MACHINE *Machine)
                 Name("uart0");
             }
         }
+        if(Machine->Pmgr != NULL) {
+            BuildPmgr(Machine->Pmgr, "pmgr");
+        }
         if(Machine->Ans != NULL) {
             BuildAns(Machine->Ans);
+        }
+        if(Machine->PmgrChild != NULL) {
+            BuildPmgr(Machine->PmgrChild, "pmgr-child");
         }
 }
 
@@ -435,7 +511,9 @@ STATIC CONST TEST_MACHINE mM4MacBookProOneCore = {
 // The disk controller of the M4 MacBook Pro, from the same device tree: "reg" of
 // /arm-io/ans (13 entries) and of /arm-io/sart-ans (3), as addresses on the bus;
 // "interrupts", AIC 1004, 1003, 1006, 1005 (the mailbox) and 1018; the
-// controller's line is number 4; "nvme-secure-bar" is there.
+// controller's line is number 4; "nvme-secure-bar" is there; "clock-gates" is
+// empty (line 5871 of the log). sart-ans is "sart,coastguard" with
+// "sart-version" 3 (lines 6069 and 6074).
 //
 STATIC CONST UINT64 mAnsRegOfM4MacBookPro[][2] = {
     { 0x281600000ULL, 0x88000 }, { 0x281050000ULL, 0x4000 }, { 0x0ULL, 0x0 }, { 0x285cc0000ULL, 0x60000 },
@@ -450,11 +528,84 @@ STATIC CONST UINT64 mSartRegOfM4MacBookPro[][2] = {
 
 STATIC CONST UINT32 mAnsInterruptsOfM4MacBookPro[] = { 1004, 1003, 1006, 1005, 1018 };
 
+STATIC CONST UINT32 mSartVersionOfM4MacBookPro = 3;
+
 STATIC CONST TEST_ANS mAnsOfM4MacBookPro = {
     mAnsRegOfM4MacBookPro, sizeof(mAnsRegOfM4MacBookPro),
     mAnsInterruptsOfM4MacBookPro, sizeof(mAnsInterruptsOfM4MacBookPro),
     4, TRUE,
     mSartRegOfM4MacBookPro, sizeof(mSartRegOfM4MacBookPro),
+    0,
+    &mSartVersionOfM4MacBookPro, sizeof(mSartVersionOfM4MacBookPro),
+    "sart,coastguard", sizeof("sart,coastguard"),
+    NULL, 0
+};
+
+//
+// The power manager of the M4 MacBook Pro, from the same device tree, the node
+// pmgr@80700000 that starts at line 5298 of the log: "compatible" "pmgr1,t8132"
+// (line 5340); the first two of its 49 "reg" entries (line 5313), the ones
+// "ps-regs" names, as addresses on the bus; all 16 entries of "ps-regs" (line
+// 5311); five of the 393 entries of "devices" (line 5360), byte for byte: 0
+// (ECPU0), 146 (ISP_SYS), 147 (ANS: flags 0x20, addr_offset 7, psreg_idx 5), 148
+// (APCIE_ST) and 325 (ANS-V, flags 0x10, virtual). The controller's register is
+// "reg" entry 0, 0x1_8070_0000 on the bus, 0x3_8070_0000 for the CPU, + 0x500 +
+// 7 * 8 = 0x3_8070_0538.
+//
+STATIC CONST UINT64 mPmgrRegOfM4MacBookPro[][2] = {
+    { 0x180700000ULL, 0xcc000 }, { 0x188280000ULL, 0x80000 },
+};
+
+STATIC CONST UINT32 mPmgrPsRegsOfM4MacBookPro[] = {
+    0x0, 0x0, 0xfff,
+    0x0, 0x100, 0x3887ff9e,
+    0x0, 0x200, 0x7fffe760,
+    0x0, 0x300, 0xffffc003,
+    0x0, 0x400, 0x7dffffff,
+    0x0, 0x500, 0x1f7c0,
+    0x0, 0xc00, 0x1,
+    0x0, 0x4000, 0x0,
+    0x0, 0x8000, 0x1f,
+    0x0, 0xc000, 0xf,
+    0x0, 0x10000, 0x1,
+    0x1, 0x0, 0x3ff77801,
+    0x1, 0x4000, 0x0,
+    0x1, 0x4100, 0x0,
+    0x1, 0x8000, 0x0,
+    0x1, 0xc000, 0x0,
+};
+
+#define PMGR_DEVICE_INDEX_ANS    2      // in mPmgrDevicesOfM4MacBookPro
+#define PMGR_DEVICE_INDEX_ANS_V  4
+
+STATIC CONST UINT8 mPmgrDevicesOfM4MacBookPro[5 * 48] = {
+    // ECPU0
+    0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x45, 0x43, 0x50, 0x55, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // ISP_SYS
+    0x02, 0x00, 0x00, 0x07, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x05, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x93, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x49, 0x53, 0x50, 0x5f, 0x53, 0x59, 0x53, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // ANS
+    0x20, 0x00, 0x00, 0x00, 0x86, 0x00, 0x00, 0x00, 0x41, 0x02, 0x07, 0x05, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x94, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x41, 0x4e, 0x53, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // APCIE_ST
+    0x00, 0x00, 0x00, 0x00, 0x94, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x05, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x95, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x41, 0x50, 0x43, 0x49, 0x45, 0x5f, 0x53, 0x54, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // ANS-V
+    0x10, 0x00, 0x00, 0x00, 0x94, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7b, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x41, 0x4e, 0x53, 0x2d, 0x56, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+
+STATIC CONST TEST_PMGR mPmgrOfM4MacBookPro = {
+    "pmgr1,t8132", sizeof("pmgr1,t8132"),
+    mPmgrRegOfM4MacBookPro, sizeof(mPmgrRegOfM4MacBookPro),
+    mPmgrPsRegsOfM4MacBookPro, sizeof(mPmgrPsRegsOfM4MacBookPro), FALSE,
+    mPmgrDevicesOfM4MacBookPro, sizeof(mPmgrDevicesOfM4MacBookPro),
     0
 };
 
@@ -494,7 +645,7 @@ STATIC CONST UINT32 mAicToGicOfM4MacBookPro[] = {
 
 //
 // The M4 MacBook Pro as m1n1 hands it to the firmware: its tree with the disk
-// controller, and the table of interrupt numbers
+// controller and the power manager, and the table of interrupt numbers
 //
 STATIC CONST TEST_MACHINE mM4MacBookProWithAns = {
     0x8132,
@@ -502,7 +653,9 @@ STATIC CONST TEST_MACHINE mM4MacBookProWithAns = {
     mRangesOfM4MacBookPro, ARRAY_SIZE(mRangesOfM4MacBookPro),
     { 0x1ad200000ULL, 0x4000 },
     &mAnsOfM4MacBookPro,
-    mAicToGicOfM4MacBookPro, ARRAY_SIZE(mAicToGicOfM4MacBookPro)
+    mAicToGicOfM4MacBookPro, ARRAY_SIZE(mAicToGicOfM4MacBookPro),
+    TestUartNamed,
+    &mPmgrOfM4MacBookPro, NULL
 };
 
 #endif // APPLE_DT_HOST_TEST_H_

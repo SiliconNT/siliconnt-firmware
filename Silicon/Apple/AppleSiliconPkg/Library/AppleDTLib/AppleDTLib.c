@@ -513,6 +513,28 @@ STATIC BOOLEAN PropertyIs(IN dt_node_t *Node, IN CONST CHAR8 *Key, IN CONST CHAR
     return Data != NULL && Length > TextLength && AsciiStrnCmp(Data, Text, TextLength + 1) == 0;
 }
 
+// "compatible" holds Text as one of its strings, each ended by a zero
+STATIC BOOLEAN Compatible(IN dt_node_t *Node, IN CONST CHAR8 *Text)
+{
+    size_t      Length     = 0;
+    CONST CHAR8 *Data      = dt_prop(Node, "compatible", &Length);
+    UINTN       TextLength = AsciiStrLen(Text);
+    UINTN       Start;
+
+    if(Data == NULL)
+    {
+        return FALSE;
+    }
+    for(Start = 0; Start < Length; Start += AsciiStrnLenS(Data + Start, Length - Start) + 1)
+    {
+        if(Length - Start > TextLength && AsciiStrnCmp(Data + Start, Text, TextLength + 1) == 0)
+        {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
 // One or two little-endian 32-bit cells
 STATIC UINT64 ReadCells(IN OUT CONST UINT8 **Cursor, IN UINT32 Cells)
 {
@@ -756,6 +778,238 @@ RETURN_STATUS AppleGetAns(IN CONST APPLE_BOOT_INFO *Info, OUT APPLE_ANS *Ans)
     CopyMem(&Found.MailboxAic, Interrupts + APPLE_ANS_MAILBOX_RECEIVE * sizeof(UINT32), sizeof(UINT32));
 
     *Ans = Found;
+    return RETURN_SUCCESS;
+}
+
+RETURN_STATUS AppleGetAnsSartVersion(IN CONST APPLE_BOOT_INFO *Info, OUT UINT32 *Version)
+{
+    dt_node_t     *Sart = dt_find(Info->DeviceTree, "/arm-io/sart-ans");
+    RETURN_STATUS Status;
+
+    *Version = 0;
+    if(Sart == NULL)
+    {
+        return RETURN_NOT_FOUND;
+    }
+    Status = ReadU32(Sart, "sart-version", Version);
+    // The first SART has no "sart-version": m1n1 v1.9.9, src/sart.c, sart_init()
+    if(Status == RETURN_NOT_FOUND && Compatible(Sart, "sart,t8015"))
+    {
+        return RETURN_SUCCESS;
+    }
+    if(RETURN_ERROR(Status))
+    {
+        *Version = 0;
+    }
+    return Status;
+}
+
+//
+// The power manager, for AppleGetAnsPmgr(). The layout of its device table, the
+// way from an entry to the entry's register and the die of the disk controller
+// are written after m1n1 v1.9.9 (https://github.com/AsahiLinux/m1n1, commit
+// 809541515659): src/pmgr.c (struct pmgr_device, pmgr_get_psreg(),
+// pmgr_device_get_addr(), pmgr_reset(), pmgr_adt_path_offset_trace(),
+// pmgr_init()), src/pmgr.h (PMGR_DIE_OFFSET, PMGR_DIE_ID), src/nvme.c
+// (nvme_init(): the die; the shutdown: "ANS", then "ANS2").
+//
+// Those files carry this notice:
+//   SPDX-License-Identifier: MIT
+//   Copyright The Asahi Linux Contributors
+// under the MIT licence, whose text is the permission notice at the top of this
+// file. Only the address is worked out here: the firmware does not read or
+// write the register.
+//
+#define PMGR_DEVICE_SIZE              48
+#define PMGR_DEVICE_FLAGS             0     // byte
+#define PMGR_DEVICE_ADDR_OFFSET       10    // byte: where in the group, in units of 8 bytes
+#define PMGR_DEVICE_PSREG_IDX         11    // byte: the group, an entry of "ps-regs"
+#define PMGR_DEVICE_GROUP_AND_OFFSET  16    // 32 bits: with "ps-groups", the group in bits 24-31, where in it in bits 0-23
+#define PMGR_DEVICE_NAME              32
+#define PMGR_DEVICE_NAME_SIZE         16
+#define PMGR_FLAG_VIRTUAL             0x10
+#define PMGR_GROUP_SIZE               12    // an entry of "ps-regs" or "ps-groups": "reg" entry, offset, a third value
+#define PMGR_DIE_OFFSET               0x2000000000ULL
+#define PMGR_DIE_ID_SHIFT             28    // in a value of "clock-gates"
+#define PMGR_REGISTER_SIZE            4
+
+STATIC dt_node_t *FindPmgr(IN CONST APPLE_BOOT_INFO *Info)
+{
+    dt_node_t *Node = dt_find(Info->DeviceTree, "/arm-io/pmgr");
+
+    if(Node != NULL && Compatible(Node, "pmgr2,arch"))
+    {
+        Node = dt_find(Info->DeviceTree, "/arm-io/pmgr-child");
+    }
+    return Node;
+}
+
+// The first entry named Name that is not virtual; NULL when there is none
+STATIC CONST UINT8 *FindPmgrDevice(IN CONST UINT8 *Devices, IN UINTN Count, IN CONST CHAR8 *Name)
+{
+    CONST UINT8 *Device;
+    UINTN       Index;
+
+    for(Index = 0; Index < Count; Index++)
+    {
+        Device = Devices + Index * PMGR_DEVICE_SIZE;
+        if((Device[PMGR_DEVICE_FLAGS] & PMGR_FLAG_VIRTUAL) == 0 &&
+           AsciiStrnCmp((CONST CHAR8 *)Device + PMGR_DEVICE_NAME, Name, PMGR_DEVICE_NAME_SIZE) == 0)
+        {
+            return Device;
+        }
+    }
+    return NULL;
+}
+
+// The die the disk controller is on: from "clock-gates" of /arm-io/ans, else from where its NVMe registers are
+STATIC RETURN_STATUS ReadAnsDie(IN CONST APPLE_BOOT_INFO *Info, IN CONST APPLE_ANS *Ans, OUT UINT32 *Die)
+{
+    dt_node_t   *Node = dt_find(Info->DeviceTree, "/arm-io/ans");
+    CONST UINT8 *Gates;
+    size_t      Length = 0;
+    UINT32      First;
+
+    *Die = 0;
+    if(Node == NULL)
+    {
+        return RETURN_NOT_FOUND;
+    }
+    Gates = dt_prop(Node, "clock-gates", &Length);
+    if(Gates == NULL || Length == 0)
+    {
+        *Die = (UINT32)((Ans->Nvme.Base >> 37) & 3);
+        return RETURN_SUCCESS;
+    }
+    if(Length % sizeof(UINT32) != 0)
+    {
+        return RETURN_INVALID_PARAMETER;
+    }
+    CopyMem(&First, Gates, sizeof(First));
+    *Die = First >> PMGR_DIE_ID_SHIFT;
+    return RETURN_SUCCESS;
+}
+
+RETURN_STATUS AppleGetAnsPmgr(IN CONST APPLE_BOOT_INFO *Info, IN CONST APPLE_ANS *Ans, OUT APPLE_MMIO_RANGE *Pmgr)
+{
+    ARM_IO           Io;
+    RETURN_STATUS    Status;
+    dt_node_t        *Node;
+    CONST UINT8      *Groups;
+    CONST UINT8      *Devices;
+    CONST UINT8      *Device;
+    CONST UINT8      *Other;
+    size_t           GroupsLength  = 0;
+    size_t           DevicesLength = 0;
+    BOOLEAN          ByGroup;
+    UINT32           Value;
+    UINT32           Group;
+    UINT32           InGroup;
+    UINT32           GroupEntry[2];     // an entry of "reg", an offset into it
+    UINT64           RegBase;
+    UINT64           RegSize;
+    UINT64           Offset;
+    UINT64           DieOffset;
+    UINT32           Die;
+    APPLE_MMIO_RANGE Found;
+
+    ZeroMem(Pmgr, sizeof(*Pmgr));
+
+    Status = GetArmIo(Info, &Io);
+    if(RETURN_ERROR(Status))
+    {
+        return Status;
+    }
+    Node = FindPmgr(Info);
+    if(Node == NULL)
+    {
+        return RETURN_NOT_FOUND;
+    }
+    Groups  = dt_prop(Node, "ps-regs", &GroupsLength);
+    ByGroup = Groups == NULL || GroupsLength == 0;
+    if(ByGroup)
+    {
+        Groups = dt_prop(Node, "ps-groups", &GroupsLength);
+    }
+    Devices = dt_prop(Node, "devices", &DevicesLength);
+    if(Groups == NULL || GroupsLength == 0 || Devices == NULL || DevicesLength == 0)
+    {
+        return RETURN_NOT_FOUND;
+    }
+    if(GroupsLength % PMGR_GROUP_SIZE != 0 || DevicesLength % PMGR_DEVICE_SIZE != 0)
+    {
+        return RETURN_INVALID_PARAMETER;
+    }
+
+    //
+    // The controller's entry: some machines call it ANS, some ANS2 (m1n1)
+    //
+    Device = FindPmgrDevice(Devices, DevicesLength / PMGR_DEVICE_SIZE, "ANS");
+    Other  = FindPmgrDevice(Devices, DevicesLength / PMGR_DEVICE_SIZE, "ANS2");
+    if(Device != NULL && Other != NULL)
+    {
+        return RETURN_UNSUPPORTED;
+    }
+    if(Device == NULL)
+    {
+        Device = Other;
+    }
+    if(Device == NULL)
+    {
+        return RETURN_NOT_FOUND;
+    }
+
+    //
+    // Its group and where in the group its register is
+    //
+    if(ByGroup)
+    {
+        CopyMem(&Value, Device + PMGR_DEVICE_GROUP_AND_OFFSET, sizeof(Value));
+        Group   = Value >> 24;
+        InGroup = Value & 0xFFFFFF;
+    }
+    else
+    {
+        Group   = Device[PMGR_DEVICE_PSREG_IDX];
+        InGroup = (UINT32)Device[PMGR_DEVICE_ADDR_OFFSET] << 3;
+    }
+    if(Group >= GroupsLength / PMGR_GROUP_SIZE)
+    {
+        return RETURN_INVALID_PARAMETER;
+    }
+    CopyMem(GroupEntry, Groups + Group * PMGR_GROUP_SIZE, sizeof(GroupEntry));
+    Status = ReadArmIoReg(&Io, Node, GroupEntry[0], &RegBase, &RegSize);
+    if(RETURN_ERROR(Status))
+    {
+        return Status;
+    }
+
+    //
+    // The register: inside its "reg" entry on die 0, nothing wraps around
+    //
+    Offset = (UINT64)GroupEntry[1] + InGroup;
+    if(Offset > RegSize || RegSize - Offset < PMGR_REGISTER_SIZE || RegBase > MAX_UINT64 - Offset)
+    {
+        return RETURN_INVALID_PARAMETER;
+    }
+    Status = ReadAnsDie(Info, Ans, &Die);
+    if(RETURN_ERROR(Status))
+    {
+        return Status;
+    }
+    DieOffset = Die * PMGR_DIE_OFFSET;
+    if(RegBase + Offset > MAX_UINT64 - DieOffset)
+    {
+        return RETURN_INVALID_PARAMETER;
+    }
+    Found.Base = RegBase + Offset + DieOffset;
+    Found.Size = PMGR_REGISTER_SIZE;
+    if(!UsableRange(&Found))
+    {
+        return RETURN_INVALID_PARAMETER;
+    }
+
+    *Pmgr = Found;
     return RETURN_SUCCESS;
 }
 

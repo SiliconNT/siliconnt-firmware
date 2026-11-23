@@ -284,12 +284,16 @@ Dbg2Build (
 //                        ReadWrite, 0, <base>, <base + size - 1>, 0, <size>)     NVMe
 //           QWordMemory (...)                                                    coprocessor
 //           QWordMemory (...)                                                    SART
+//           QWordMemory (...)                                                    power manager
 //           Interrupt (ResourceConsumer, Level, ActiveHigh, Exclusive) { <GSIV> } controller
 //           Interrupt (ResourceConsumer, Level, ActiveHigh, Exclusive) { <GSIV> } mailbox
 //         })
-//         Name (_DSD, Package () {                       only with "nvme-secure-bar"
+//         Name (_DSD, Package () {
 //           ToUUID ("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
-//           Package () { Package (2) { "nvme-secure-bar", 1 } }
+//           Package () {
+//             Package (2) { "nvme-secure-bar", 1 }      only with "nvme-secure-bar"
+//             Package (2) { "sart-version", <version> }
+//           }
 //         })
 //       }
 //     }
@@ -316,6 +320,7 @@ STATIC CONST CHAR8  mCpuNameSuffix[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
 STATIC CONST CHAR8  mAnsHid[]         = DSDT_ANS_HID;
 STATIC CONST CHAR8  mSecureBarKey[]   = "nvme-secure-bar";
+STATIC CONST CHAR8  mSartVersionKey[] = "sart-version";
 
 //
 // The Device Properties UUID, daffd814-6eba-4d8c-8a91-bc9bbf4aa301, in the byte
@@ -335,10 +340,10 @@ STATIC CONST UINT8  mDevicePropertiesUuid[16] = {
 #define ADDRESS_FLAG_MAX_FIXED  BIT3
 
 //
-// _CRS: three QWORD memory descriptors, two Extended Interrupt descriptors with
+// _CRS: four QWORD memory descriptors, two Extended Interrupt descriptors with
 // one interrupt each, the end tag. Its size fits the one-byte integer form.
 //
-#define ANS_CRS_SIZE  (3 * sizeof (EFI_ACPI_QWORD_ADDRESS_SPACE_DESCRIPTOR) +\
+#define ANS_CRS_SIZE  (4 * sizeof (EFI_ACPI_QWORD_ADDRESS_SPACE_DESCRIPTOR) +\
                        2 * sizeof (EFI_ACPI_EXTENDED_INTERRUPT_DESCRIPTOR) +\
                        sizeof (EFI_ACPI_END_TAG_DESCRIPTOR))
 
@@ -381,14 +386,25 @@ PutPkgLength (
   return Cursor;
 }
 
-// An integer below 256 the way the ASL compiler encodes it: the shortest form
+//
+// A 32-bit integer the way the ASL compiler encodes it: the shortest form, Zero,
+// One, or a prefix and 1, 2 or 4 bytes (20.2.3, ComputationalData)
+//
 STATIC
 UINTN
 IntegerSize (
   IN UINT32  Value
   )
 {
-  return Value <= 1 ? 1 : 2;
+  if (Value <= 1) {
+    return 1;
+  }
+
+  if (Value <= MAX_UINT8) {
+    return 1 + 1;
+  }
+
+  return Value <= MAX_UINT16 ? 1 + 2 : 1 + 4;
 }
 
 STATIC
@@ -398,14 +414,28 @@ PutInteger (
   IN  UINT32  Value
   )
 {
-  if (Value <= 1) {
-    *Cursor++ = Value == 0 ? AML_ZERO_OP : AML_ONE_OP;
-    return Cursor;
+  UINTN  Bytes;
+
+  switch (IntegerSize (Value)) {
+    case 1:
+      *Cursor++ = Value == 0 ? AML_ZERO_OP : AML_ONE_OP;
+      return Cursor;
+    case 1 + 1:
+      *Cursor++ = AML_BYTE_PREFIX;
+      Bytes     = 1;
+      break;
+    case 1 + 2:
+      *Cursor++ = AML_WORD_PREFIX;
+      Bytes     = 2;
+      break;
+    default:
+      *Cursor++ = AML_DWORD_PREFIX;
+      Bytes     = 4;
+      break;
   }
 
-  *Cursor++ = AML_BYTE_PREFIX;
-  *Cursor++ = (UINT8)Value;
-  return Cursor;
+  CopyMem (Cursor, &Value, Bytes);    // little-endian
+  return Cursor + Bytes;
 }
 
 //
@@ -451,17 +481,44 @@ PackageSize (
 // After the PkgLength of the Buffer of _CRS: its size as an integer, the descriptors
 #define ANS_CRS_CONTENT_SIZE  (2 + ANS_CRS_SIZE)
 
-// After the PkgLength of Package (2) { "nvme-secure-bar", 1 }: NumElements, the key, One
-#define SECURE_BAR_CONTENT_SIZE  (1 + 1 + sizeof (mSecureBarKey) + 1)
+//
+// After the PkgLength of Package (2) { "key", value }, an integer property:
+// NumElements, the key as a string, the value
+//
+STATIC
+UINTN
+PropertyContentSize (
+  IN UINTN   KeySize,
+  IN UINT32  Value
+  )
+{
+  return 1 + 1 + KeySize + IntegerSize (Value);
+}
 
-// After the PkgLength of the package of properties: NumElements, the one property
-#define PROPERTIES_CONTENT_SIZE  (1 + PackageSize (SECURE_BAR_CONTENT_SIZE))
+// After the PkgLength of the package of properties: NumElements, the properties
+STATIC
+UINTN
+PropertiesContentSize (
+  IN CONST DSDT_ANS  *Ans
+  )
+{
+  return 1 +
+         (Ans->SecureBar ? PackageSize (PropertyContentSize (sizeof (mSecureBarKey), 1)) : 0) +
+         PackageSize (PropertyContentSize (sizeof (mSartVersionKey), Ans->SartVersion));
+}
 
 // After the PkgLength of the Buffer of ToUUID: the size 16 as an integer, the 16 bytes
 #define UUID_CONTENT_SIZE  (2 + sizeof (mDevicePropertiesUuid))
 
 // After the PkgLength of the Package of _DSD: NumElements, the UUID, the properties
-#define ANS_DSD_CONTENT_SIZE  (1 + PackageSize (UUID_CONTENT_SIZE) + PackageSize (PROPERTIES_CONTENT_SIZE))
+STATIC
+UINTN
+DsdContentSize (
+  IN CONST DSDT_ANS  *Ans
+  )
+{
+  return 1 + PackageSize (UUID_CONTENT_SIZE) + PackageSize (PropertiesContentSize (Ans));
+}
 
 // What follows the PkgLength of Device (ANS0): its name and its objects
 STATIC
@@ -475,7 +532,7 @@ AnsContentSize (
          NAME_SIZE + IntegerSize (0) +
          NAME_SIZE + IntegerSize (0) +
          NAME_SIZE + PackageSize (ANS_CRS_CONTENT_SIZE) +
-         (Ans->SecureBar ? NAME_SIZE + PackageSize (ANS_DSD_CONTENT_SIZE) : 0);
+         NAME_SIZE + PackageSize (DsdContentSize (Ans));
 }
 
 STATIC
@@ -555,6 +612,25 @@ PutInterrupt (
   return Cursor + sizeof (Descriptor);
 }
 
+// Package (2) { "key", Value }; KeySize counts the terminating zero
+STATIC
+UINT8 *
+PutProperty (
+  OUT UINT8        *Cursor,
+  IN  CONST CHAR8  *Key,
+  IN  UINTN        KeySize,
+  IN  UINT32       Value
+  )
+{
+  *Cursor++ = AML_PACKAGE_OP;
+  Cursor    = PutPkgLength (Cursor, PropertyContentSize (KeySize, Value));
+  *Cursor++ = 2;
+  *Cursor++ = AML_STRING_PREFIX;
+  CopyMem (Cursor, Key, KeySize);
+  Cursor += KeySize;
+  return PutInteger (Cursor, Value);
+}
+
 STATIC
 UINT8 *
 PutAns (
@@ -588,18 +664,15 @@ PutAns (
   Cursor    = PutQWordMemory (Cursor, &Ans->Nvme);
   Cursor    = PutQWordMemory (Cursor, &Ans->Coprocessor);
   Cursor    = PutQWordMemory (Cursor, &Ans->Sart);
+  Cursor    = PutQWordMemory (Cursor, &Ans->Pmgr);
   Cursor    = PutInterrupt (Cursor, Ans->NvmeGsiv);
   Cursor    = PutInterrupt (Cursor, Ans->MailboxGsiv);
   CopyMem (Cursor, &EndTag, sizeof (EndTag));
   Cursor += sizeof (EndTag);
 
-  if (!Ans->SecureBar) {
-    return Cursor;
-  }
-
   Cursor    = PutName (Cursor, "_DSD");
   *Cursor++ = AML_PACKAGE_OP;
-  Cursor    = PutPkgLength (Cursor, ANS_DSD_CONTENT_SIZE);
+  Cursor    = PutPkgLength (Cursor, DsdContentSize (Ans));
   *Cursor++ = 2;
 
   *Cursor++ = AML_BUFFER_OP;
@@ -609,15 +682,13 @@ PutAns (
   Cursor += sizeof (mDevicePropertiesUuid);
 
   *Cursor++ = AML_PACKAGE_OP;
-  Cursor    = PutPkgLength (Cursor, PROPERTIES_CONTENT_SIZE);
-  *Cursor++ = 1;
-  *Cursor++ = AML_PACKAGE_OP;
-  Cursor    = PutPkgLength (Cursor, SECURE_BAR_CONTENT_SIZE);
-  *Cursor++ = 2;
-  *Cursor++ = AML_STRING_PREFIX;
-  CopyMem (Cursor, mSecureBarKey, sizeof (mSecureBarKey));
-  Cursor += sizeof (mSecureBarKey);
-  return PutInteger (Cursor, 1);
+  Cursor    = PutPkgLength (Cursor, PropertiesContentSize (Ans));
+  *Cursor++ = Ans->SecureBar ? 2 : 1;
+  if (Ans->SecureBar) {
+    Cursor = PutProperty (Cursor, mSecureBarKey, sizeof (mSecureBarKey), 1);
+  }
+
+  return PutProperty (Cursor, mSartVersionKey, sizeof (mSartVersionKey), Ans->SartVersion);
 }
 
 //
@@ -679,7 +750,8 @@ DsdtBuild (
   }
 
   if ((Ans != NULL) &&
-      !(DescribableRange (&Ans->Nvme) && DescribableRange (&Ans->Coprocessor) && DescribableRange (&Ans->Sart)))
+      !(DescribableRange (&Ans->Nvme) && DescribableRange (&Ans->Coprocessor) && DescribableRange (&Ans->Sart) &&
+        DescribableRange (&Ans->Pmgr)))
   {
     return RETURN_INVALID_PARAMETER;
   }

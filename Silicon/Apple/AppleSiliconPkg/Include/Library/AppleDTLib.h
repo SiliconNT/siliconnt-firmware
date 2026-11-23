@@ -304,7 +304,8 @@ RETURN_STATUS AppleFindGicInterrupt(IN CONST APPLE_AIC_TO_GIC *Table, IN UINT32 
 // SiliconNT: the internal disk controller (ANS), the node /arm-io/ans, and the
 // SART that filters its DMA, /arm-io/sart-ans (the paths m1n1 takes, src/nvme.c).
 // What a driver of the controller has to be told: three register ranges and two
-// interrupt lines.
+// interrupt lines; AppleGetAnsSartVersion() and AppleGetAnsPmgr() below read the
+// rest.
 //
 // The registers, each taken through "ranges" of /arm-io like AppleGetUartBase():
 //   Nvme         The NVMe and NVMMU registers. With "nvme-secure-bar" (M4) the
@@ -354,5 +355,57 @@ typedef struct
 // or a value past the last.
 //
 RETURN_STATUS AppleGetAns(IN CONST APPLE_BOOT_INFO *Info, OUT APPLE_ANS *Ans);
+
+//
+// SiliconNT: the version of the SART of the disk controller, which says how its
+// registers are laid out (SiliconNT docs/findings/0071, conclusion 32):
+// "sart-version" of /arm-io/sart-ans, or 0 when that is missing and the node is
+// compatible with "sart,t8015" (m1n1 v1.9.9, src/sart.c, sart_init()). The value
+// is passed on as the tree has it: the driver refuses a version it does not know.
+// With any status but RETURN_SUCCESS, *Version is 0 and no disk controller is
+// described.
+//
+// RETURN_NOT_FOUND          No /arm-io/sart-ans; or no "sart-version" and not
+//                           compatible with "sart,t8015".
+// RETURN_INVALID_PARAMETER  "sart-version" is not one 32-bit value.
+//
+RETURN_STATUS AppleGetAnsSartVersion(IN CONST APPLE_BOOT_INFO *Info, OUT UINT32 *Version);
+
+//
+// SiliconNT: the controller's register in the power manager, the one a driver
+// resets the controller with (SiliconNT docs/findings/0071, conclusion 31). Four
+// bytes. Only its address: nothing here reads or writes it. Found the way m1n1
+// v1.9.9 finds it for pmgr_reset() (src/pmgr.c, src/pmgr.h, src/nvme.c):
+//
+//   The power manager is /arm-io/pmgr, or /arm-io/pmgr-child when /arm-io/pmgr is
+//   compatible with "pmgr2,arch". Its "devices" is a table of 48-byte entries;
+//   the controller's entry is the one named "ANS", or else "ANS2" (16 bytes, the
+//   name at byte 32), without the flag "virtual" (0x10 in byte 0). Its register
+//   group is entry psreg_idx (byte 11) of "ps-regs", three 32-bit values each: an
+//   entry of the power manager's "reg" and an offset into it. The register is
+//
+//     that "reg" entry (through "ranges" of /arm-io) + the offset
+//       + die * 0x20_0000_0000 + addr_offset (byte 10) * 8
+//
+//   Without "ps-regs" the table is "ps-groups", the group is the high 8 bits of
+//   the 32-bit value at byte 16 of the entry and the last term its low 24 bits.
+//   The die is bits 28-31 of the first value of "clock-gates" of /arm-io/ans;
+//   when that is empty or missing, bits 37-38 of Ans->Nvme.Base.
+//
+// Ans is what AppleGetAns() read. With any status but RETURN_SUCCESS, *Pmgr is
+// all 0 and no disk controller is described.
+//
+// RETURN_NOT_FOUND          No power manager node; it has no "reg", no "devices",
+//                           or neither "ps-regs" nor "ps-groups" with a value; no
+//                           entry named "ANS" or "ANS2".
+// RETURN_UNSUPPORTED        Entries named "ANS" and "ANS2" both: which of them
+//                           is the controller is not known.
+// RETURN_INVALID_PARAMETER  "devices", "ps-regs" or "clock-gates" is not a whole
+//                           number of entries; the entry's group is not in the
+//                           table, or names an entry past the end of "reg"; the
+//                           register (die 0's) is not inside that "reg" entry, or
+//                           its four bytes wrap around the address space.
+//
+RETURN_STATUS AppleGetAnsPmgr(IN CONST APPLE_BOOT_INFO *Info, IN CONST APPLE_ANS *Ans, OUT APPLE_MMIO_RANGE *Pmgr);
 
 #endif /* APPLEDTLIB_H */

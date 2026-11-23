@@ -111,13 +111,12 @@ DisplayQueryMode(
       (VOID **)Info);
 
   ASSERT_EFI_ERROR(Status);
+  if (EFI_ERROR(Status))
+    return Status;
 
-  *SizeOfInfo                   = sizeof(EFI_GRAPHICS_OUTPUT_MODE_INFORMATION);
-  (*Info)->Version              = This->Mode->Info->Version;
-  (*Info)->HorizontalResolution = This->Mode->Info->HorizontalResolution;
-  (*Info)->VerticalResolution   = This->Mode->Info->VerticalResolution;
-  (*Info)->PixelFormat          = This->Mode->Info->PixelFormat;
-  (*Info)->PixelsPerScanLine    = This->Mode->Info->PixelsPerScanLine;
+  /* All of the mode information, the pixel masks too */
+  *SizeOfInfo = sizeof(**Info);
+  **Info = *This->Mode->Info;
 
   return EFI_SUCCESS;
 }
@@ -177,13 +176,29 @@ SimpleFbDxeInitialize(
   UINT64 FramebufferAddr   = BootArgs->video.base;
   UINT32 FramebufferWidth  = BootArgs->video.width;
   UINT32 FramebufferHeight = BootArgs->video.height;
+  UINT64 FramebufferStride = BootArgs->video.stride;
 
-  DEBUG((EFI_D_INFO, "SimpleFbDxe: Framebuffer parameters, Base: 0x%llx, Width, %d, Height %d\n", FramebufferAddr, FramebufferWidth, FramebufferHeight));
+  DEBUG((EFI_D_INFO, "SimpleFbDxe: Framebuffer parameters, Base: 0x%llx, Width, %d, Height %d, Stride %lld\n", FramebufferAddr, FramebufferWidth, FramebufferHeight, FramebufferStride));
 
   /* Sanity check */
   if (FramebufferAddr == 0 || FramebufferWidth == 0 ||
       FramebufferHeight == 0) {
     DEBUG((EFI_D_ERROR, "SimpleFbDxe: Invalid framebuffer parameters\n"));
+    return EFI_DEVICE_ERROR;
+  }
+
+  /*
+   * Bytes per line: the stride of the boot arguments, which iBoot and m1n1 give
+   * in bytes; width * 4 when they give none. A line holds whole pixels and at
+   * least the width.
+   */
+  UINT64 LineLength = (FramebufferStride != 0)
+                          ? FramebufferStride
+                          : (UINT64)FramebufferWidth * FB_BYTES_PER_PIXEL;
+  if (LineLength < (UINT64)FramebufferWidth * FB_BYTES_PER_PIXEL ||
+      LineLength % FB_BYTES_PER_PIXEL != 0 ||
+      LineLength / FB_BYTES_PER_PIXEL > MAX_UINT32) {
+    DEBUG((EFI_D_ERROR, "SimpleFbDxe: Invalid framebuffer stride %lld for width %d\n", FramebufferStride, FramebufferWidth));
     return EFI_DEVICE_ERROR;
   }
 
@@ -221,11 +236,10 @@ SimpleFbDxeInitialize(
   mDisplay.Mode->Info->VerticalResolution   = FramebufferHeight;
 
   /* SimpleFB runs on a8r8g8b8 (VIDEO_BPP32) for WoA devices */
-  UINT32               LineLength = FramebufferWidth * VNBYTES(VIDEO_BPP32);
-  UINT32               FrameBufferSize    = LineLength * FramebufferHeight;
+  UINTN                FrameBufferSize    = (UINTN)(LineLength * FramebufferHeight);
   EFI_PHYSICAL_ADDRESS FrameBufferAddress = FramebufferAddr;
 
-  mDisplay.Mode->Info->PixelsPerScanLine = FramebufferWidth;
+  mDisplay.Mode->Info->PixelsPerScanLine = (UINT32)(LineLength / FB_BYTES_PER_PIXEL);
   mDisplay.Mode->Info->PixelFormat = PixelBlueGreenRedReserved8BitPerColor;
   mDisplay.Mode->SizeOfInfo      = sizeof(EFI_GRAPHICS_OUTPUT_MODE_INFORMATION);
   mDisplay.Mode->FrameBufferBase = FrameBufferAddress;

@@ -48,10 +48,13 @@ class SettingsManager(UpdateSettingsManager, SetupSettingsManager):
     def GetRequiredSubmodules(self):
         # The second argument is "recursive". The nested submodules of the Mu
         # repositories (brotli, libfdt, test frameworks ...) are not needed.
+        # siliconnt-drivers holds the disk controller core AnsBlockIoDxe is
+        # built on.
         return [
             RequiredSubmodule("MU_BASECORE", False),
             RequiredSubmodule("Common/TIANO", False),
             RequiredSubmodule("Silicon/ARM/TIANO", False),
+            RequiredSubmodule("Platform/SiliconNTPkg/Drivers/AnsBlockIoDxe/siliconnt-drivers", False),
         ]
 
     def SetArchitectures(self, list_of_requested_architectures):

@@ -212,6 +212,12 @@
   # Apple device tree
   AppleDTLib|AppleSiliconPkg/Library/AppleDTLib/AppleDTLib.inf
 
+  # DMA. No device keeps the caches coherent with memory: the library does the
+  # cache maintenance around each transfer (SiliconNT docs/findings/0063,
+  # conclusion 33). There is no IOMMU protocol for its Mu additions to call
+  DmaLib|EmbeddedPkg/Library/NonCoherentDmaLib/NonCoherentDmaLib.inf
+  IoMmuLib|MdeModulePkg/Library/IoMmuLibNull/IoMmuLibNull.inf
+
   # Variables
   VarCheckLib|MdeModulePkg/Library/VarCheckLib/VarCheckLib.inf
   VariablePolicyLib|MdeModulePkg/Library/VariablePolicyLib/VariablePolicyLib.inf
@@ -352,14 +358,16 @@
       gEfiShellPkgTokenSpaceGuid.PcdShellLibAutoInitialize|FALSE
   }
 
-  # Disks: only the RAM disk over the boot disk image the loader leaves in memory
-  # (the "RAMDisk" entry of /chosen/memory-map in the Apple device tree)
+  # Disks: the RAM disk over the boot disk image the loader leaves in memory (the
+  # "RAMDisk" entry of /chosen/memory-map in the Apple device tree), and the
+  # internal disk, read-only
   MdeModulePkg/Universal/Disk/DiskIoDxe/DiskIoDxe.inf
   MdeModulePkg/Universal/Disk/PartitionDxe/PartitionDxe.inf
   MdeModulePkg/Universal/Disk/UnicodeCollation/EnglishDxe/EnglishDxe.inf
   MdeModulePkg/Universal/Disk/RamDiskDxe/RamDiskDxe.inf
   FatPkg/EnhancedFatDxe/Fat.inf
   AppleSiliconPkg/Drivers/BootRamdiskHelperDxe/BootRamdiskHelperDxe.inf
+  SiliconNTPkg/Drivers/AnsBlockIoDxe/AnsBlockIoDxe.inf
 
   # ACPI and SMBIOS. The platform's own driver builds MADT, DSDT and, when there
   # is a serial port, DBG2 from the device tree and installs them with the GTDT

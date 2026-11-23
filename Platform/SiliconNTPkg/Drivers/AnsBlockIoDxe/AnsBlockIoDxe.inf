@@ -1,0 +1,65 @@
+## @file
+#  The internal disk of an Apple silicon Mac, read-only, as EFI_BLOCK_IO_PROTOCOL.
+#  See AnsBlockIoDxe.c.
+#
+#  The disk controller's core is the directory ans/core of siliconnt-drivers
+#  (MIT; most of it from m1n1, see ans/core/LICENSE.m1n1 there), a
+#  submodule of this repository at siliconnt-drivers/. It is built from there as
+#  it is; this driver adds the environment it runs in (AnsEnv.c, AnsBarrier.c).
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = AnsBlockIoDxe
+  FILE_GUID                      = 78698e8c-10d1-46d6-a32c-0a4b6c7cd59b
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = AnsBlockIoDxeEntryPoint
+
+[Sources]
+  AnsBlockIoDxe.c
+  AnsEnv.c
+  AnsEnv.h
+  siliconnt-drivers/ans/core/ans_core.h
+  siliconnt-drivers/ans/core/ans_env.h
+  siliconnt-drivers/ans/core/ans_internal.h
+  siliconnt-drivers/ans/core/asc.c
+  siliconnt-drivers/ans/core/asc.h
+  siliconnt-drivers/ans/core/nvme.c
+  siliconnt-drivers/ans/core/nvme.h
+  siliconnt-drivers/ans/core/pmgr.c
+  siliconnt-drivers/ans/core/pmgr.h
+  siliconnt-drivers/ans/core/rtkit.c
+  siliconnt-drivers/ans/core/rtkit.h
+  siliconnt-drivers/ans/core/sart.c
+  siliconnt-drivers/ans/core/sart.h
+
+[Sources.AARCH64]
+  AnsBarrier.c
+
+[Packages]
+  EmbeddedPkg/EmbeddedPkg.dec
+  MdePkg/MdePkg.dec
+  AppleSiliconPkg/AppleSiliconPkg.dec
+
+[LibraryClasses]
+  AppleDTLib
+  BaseMemoryLib
+  DebugLib
+  DmaLib
+  IoLib
+  TimerLib
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+
+[Protocols]
+  gEfiBlockIoProtocolGuid                       ## PRODUCES
+  gEfiDevicePathProtocolGuid                    ## PRODUCES
+
+[Guids]
+  gEfiEventExitBootServicesGuid                 ## CONSUMES ## Event
+
+[Depex]
+  TRUE

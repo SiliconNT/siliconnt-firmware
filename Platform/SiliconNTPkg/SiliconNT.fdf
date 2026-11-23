@@ -109,6 +109,7 @@ FvNameGuid         = 3f1a6d52-8c0b-4e57-a3d4-71b29c5e0a86
   INF MdeModulePkg/Universal/Disk/RamDiskDxe/RamDiskDxe.inf
   INF FatPkg/EnhancedFatDxe/Fat.inf
   INF AppleSiliconPkg/Drivers/BootRamdiskHelperDxe/BootRamdiskHelperDxe.inf
+  INF SiliconNTPkg/Drivers/AnsBlockIoDxe/AnsBlockIoDxe.inf
 
   # ACPI and SMBIOS
   INF MdeModulePkg/Universal/Acpi/AcpiTableDxe/AcpiTableDxe.inf

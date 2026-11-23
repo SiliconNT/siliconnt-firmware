@@ -41,7 +41,8 @@ The design, and the evidence behind each of these, is in the SiliconNT repositor
 |---|---|
 | `MU_BASECORE`, `Common/TIANO`, `Silicon/ARM/TIANO` | Microsoft's Project Mu repositories, unmodified submodules |
 | `Silicon/Apple/AppleSiliconPkg` | Code common to Apple silicon machines, taken from NTASP (see its `README.md`) |
-| `Platform/SiliconNTPkg` | The platform: build files, memory map, ACPI tables |
+| `Platform/SiliconNTPkg` | The platform: build files, memory map, ACPI tables, the internal disk driver |
+| `Platform/SiliconNTPkg/Drivers/AnsBlockIoDxe/siliconnt-drivers` | SiliconNT's Windows drivers, a submodule. The internal disk driver is built on its disk controller core, `ans/core`, as it is there |
 
 ## Building
 
@@ -60,15 +61,17 @@ The image is `Build/SiliconNT-AARCH64/DEBUG_CLANGPDB/FV/SILICONNT_EFI.fd`.
 
 ## Tests
 
-Two test programs run on the build host; they need `cc`, the second one also `iasl`
-(`acpica-tools`).
+These test programs run on the build host. They need `cc`; the ACPI one also `iasl`
+(`acpica-tools`), the disk one the `siliconnt-drivers` submodule and the sanitizer
+libraries that come with gcc.
 
 ```
 Silicon/Apple/AppleSiliconPkg/Test/AppleDTLibHostTest/run.sh   # the device tree reader
 Platform/SiliconNTPkg/Test/AcpiTablesHostTest/run.sh           # MADT, DBG2, DSDT from a device tree
+Platform/SiliconNTPkg/Test/AnsBlockIoHostTest/run.sh           # the internal disk, on a fake controller
 ```
 
-Each prints one line per check and ends with `all N checks passed`; the second then
+Each prints one line per check and ends with `all N checks passed`; the ACPI one then
 prints `all N DSDTs match the ASL compiler`.
 
 ## State
@@ -80,4 +83,7 @@ has been built and tested on the host only; it has not been run on a machine.
 ## Licence
 
 New files are BSD-2-Clause-Patent, like Project Mu. Files taken from other projects
-keep their own notices; see `Silicon/Apple/AppleSiliconPkg/README.md`.
+keep their own notices; see `Silicon/Apple/AppleSiliconPkg/README.md`. The disk
+controller core the internal disk driver is built on is MIT, from the
+`siliconnt-drivers` submodule; part of it comes from m1n1 (see `ans/core/LICENSE.m1n1`
+there).

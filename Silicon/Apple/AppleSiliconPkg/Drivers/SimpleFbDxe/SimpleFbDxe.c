@@ -17,13 +17,6 @@
 #include <Protocol/GraphicsOutput.h>
 
 /// Defines
-/*
- * Convert enum video_log2_bpp to bytes and bits. Note we omit the outer
- * brackets to allow multiplication by fractional pixels.
- */
-#define VNBYTES(bpix) (1 << (bpix)) / 8
-#define VNBITS(bpix) (1 << (bpix))
-
 #define POS_TO_FB(posX, posY)                                                  \
   ((UINT8                                                                      \
         *)((UINTN)This->Mode->FrameBufferBase + (posY)*This->Mode->Info->PixelsPerScanLine * FB_BYTES_PER_PIXEL + (posX)*FB_BYTES_PER_PIXEL))
@@ -36,19 +29,6 @@
 #define DISPLAYDXE_GREEN_MASK 0x00FF00
 #define DISPLAYDXE_BLUE_MASK 0x0000FF
 #define DISPLAYDXE_ALPHA_MASK 0x000000
-
-/*
- * Bits per pixel selector. Each value n is such that the bits-per-pixel is
- * 2 ^ n
- */
-enum video_log2_bpp {
-  VIDEO_BPP1 = 0,
-  VIDEO_BPP2,
-  VIDEO_BPP4,
-  VIDEO_BPP8,
-  VIDEO_BPP16,
-  VIDEO_BPP32,
-};
 
 typedef struct {
   VENDOR_DEVICE_PATH DisplayDevicePath;
@@ -235,7 +215,7 @@ SimpleFbDxeInitialize(
   mDisplay.Mode->Info->HorizontalResolution = FramebufferWidth;
   mDisplay.Mode->Info->VerticalResolution   = FramebufferHeight;
 
-  /* SimpleFB runs on a8r8g8b8 (VIDEO_BPP32) for WoA devices */
+  /* SimpleFB runs on a8r8g8b8 (FB_BITS_PER_PIXEL) for WoA devices */
   UINTN                FrameBufferSize    = (UINTN)(LineLength * FramebufferHeight);
   EFI_PHYSICAL_ADDRESS FrameBufferAddress = FramebufferAddr;
 

@@ -13,8 +13,8 @@ case "$(uname -m)" in
 esac
 out="$(mktemp)"
 trap 'rm -f "$out"' EXIT
-# MDEPKG_NDEBUG: no DebugLib. -Wno-unused-*: the driver keeps macros and an enum
-# it no longer uses, and the drawing library has more than the test calls.
+# MDEPKG_NDEBUG: no DebugLib. -Wno-unused-*: the drawing library has more than
+# the test calls.
 ${CC:-cc} -Wall -Werror -Wno-unused-function -Wno-unused-variable -Wno-unused-const-variable \
   -fshort-wchar -DMDEPKG_NDEBUG \
   -I "$root/MU_BASECORE/MdePkg/Include" -I "$root/MU_BASECORE/MdePkg/Include/$arch" \

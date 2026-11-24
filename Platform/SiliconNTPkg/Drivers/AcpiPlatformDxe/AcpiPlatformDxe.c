@@ -12,9 +12,10 @@
   when the device tree has no /arm-io/uart0 as when m1n1 runs the guest without
   a host, the other four tables are the same as with it.
 
-  The DSDT also describes the internal disk controller when the device tree and
-  the table of interrupt numbers hold all a node needs (AnsNode.c). Otherwise the
-  DSDT goes without it and the log says why; the firmware boots on as before.
+  The DSDT also describes the internal disk controller (AnsNode.c), MTP and SMC
+  (CoprocessorNode.c), each when the device tree and the table of interrupt numbers
+  hold all its node needs. Otherwise the DSDT goes without that node and the log
+  says why; the firmware boots on as before.
 
   All tables are built before the first is installed: a device tree that
   cannot be used leaves the machine without ACPI tables and with the reason in
@@ -32,11 +33,13 @@
 #include <Library/DebugLib.h>
 #include <Library/MemoryAllocationLib.h>
 #include <Library/PcdLib.h>
+#include <Library/PrintLib.h>
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/AppleDTLib.h>
 
 #include "AcpiTableBuilder.h"
 #include "AnsNode.h"
+#include "CoprocessorNode.h"
 #include "StaticTables.h"
 
 // Aff3, Aff2, Aff1 and Aff0 of MPIDR_EL1, which is what the MADT holds of it
@@ -44,6 +47,13 @@
 
 // MADT, GTDT, FADT, DBG2 and DSDT; DBG2 only with a serial port
 #define MAX_TABLE_COUNT  5
+
+// The disk controller, MTP and SMC
+#define MAX_DEVICE_COUNT  3
+
+// Tens of KiB each, too much for the stack
+STATIC COPROCESSOR_NODE  mMtp;
+STATIC COPROCESSOR_NODE  mSmc;
 
 /**
   A copy of a table that is the same on every machine, with the number of the
@@ -119,6 +129,108 @@ PrintAnsNode (
   }
 }
 
+/**
+  What is in a coprocessor's node, what was left out of it and why
+**/
+STATIC
+VOID
+PrintCoprocessorNodeMade (
+  IN CONST CHAR8             *Name,
+  IN CONST COPROCESSOR_NODE  *Node
+  )
+{
+  CONST APPLE_DEVICE_RANGE  *Range;
+  CONST APPLE_DEVICE_LINE   *Line;
+  CONST SKIPPED_PROPERTY    *Skipped;
+  CHAR8                     Entry[12];
+  UINTN                     Index;
+
+  DEBUG ((
+    DEBUG_INFO,
+    "AcpiPlatformDxe: %a, %a: %u memory ranges, %u interrupts, %u properties\n",
+    Name,
+    Node->Dsdt.Hid,
+    (UINT32)Node->Dsdt.MemoryCount,
+    (UINT32)Node->Dsdt.GsivCount,
+    (UINT32)Node->Dsdt.PropertyCount
+    ));
+
+  for (Index = 0; Index < Node->Device.RangeCount; Index++) {
+    Range    = &Node->Device.Ranges[Index];
+    Entry[0] = 0;
+    if (Range->Entry != APPLE_DEVICE_NO_ENTRY) {
+      AsciiSPrint (Entry, sizeof (Entry), "-%u", Range->Entry);
+    }
+
+    if (Range->PowerManager) {
+      DEBUG ((DEBUG_INFO, "AcpiPlatformDxe: %a without %a%a 0x%lx+0x%lx: the power manager has registers there\n", Name, Range->Block, Entry, Range->Range.Base, Range->Range.Size));
+    } else {
+      DEBUG ((DEBUG_INFO, "AcpiPlatformDxe: %a memory %a%a 0x%lx+0x%lx\n", Name, Range->Block, Entry, Range->Range.Base, Range->Range.Size));
+    }
+  }
+
+  if (RETURN_ERROR (Node->Device.SramStatus)) {
+    DEBUG ((DEBUG_WARN, "AcpiPlatformDxe: %a without its SRAM: where it is cannot be told from the device tree: %r\n", Name, Node->Device.SramStatus));
+  }
+
+  for (Index = 0; Index < Node->Device.LineCount; Index++) {
+    Line = &Node->Device.Lines[Index];
+    DEBUG ((DEBUG_INFO, "AcpiPlatformDxe: %a interrupt %a-%u AIC %u is GIC %u\n", Name, Line->Block, Line->Entry, Line->Aic, Node->Gsiv[Index]));
+  }
+
+  for (Index = 0; Index < MIN (Node->Properties.SkippedCount, DEVICE_MAX_SKIPPED); Index++) {
+    Skipped = &Node->Properties.Skipped[Index];
+    DEBUG ((
+      DEBUG_WARN,
+      "AcpiPlatformDxe: %a without \"%a\", %u bytes in the device tree: %a\n",
+      Name,
+      Skipped->Key,
+      (UINT32)Skipped->Length,
+      Skipped->Reason == PropertySkippedValue     ? "they are not a value of its type" :
+      Skipped->Reason == PropertySkippedReference ? "the node it points to cannot be used" :
+                                                    "there is no room for it"
+      ));
+  }
+
+  if (Node->Properties.SkippedCount > DEVICE_MAX_SKIPPED) {
+    DEBUG ((DEBUG_WARN, "AcpiPlatformDxe: %a: %u properties were left out, the first %u of them are listed\n", Name, (UINT32)Node->Properties.SkippedCount, DEVICE_MAX_SKIPPED));
+  }
+}
+
+/**
+  A coprocessor: its node, or why there is none
+**/
+STATIC
+VOID
+PrintCoprocessorNode (
+  IN CONST CHAR8             *Name,
+  IN CONST COPROCESSOR_NODE  *Node
+  )
+{
+  CONST APPLE_DEVICE_LINE  *Line;
+
+  switch (Node->Outcome) {
+    case CoprocessorNodeMade:
+      PrintCoprocessorNodeMade (Name, Node);
+      break;
+    case CoprocessorNodeNoDevice:
+      if (Node->Device.FailedProperty == NULL) {
+        DEBUG ((DEBUG_INFO, "AcpiPlatformDxe: no %a node: %a in the device tree cannot be read: %r\n", Name, Node->Device.FailedNode, Node->Status));
+      } else {
+        DEBUG ((DEBUG_WARN, "AcpiPlatformDxe: no %a node: \"%a\" of %a in the device tree cannot be used: %r\n", Name, Node->Device.FailedProperty, Node->Device.FailedNode, Node->Status));
+      }
+
+      break;
+    case CoprocessorNodeNoTable:
+      DEBUG ((DEBUG_INFO, "AcpiPlatformDxe: no %a node: no AIC-to-GIC table to use: %r\n", Name, Node->Status));
+      break;
+    case CoprocessorNodeLineMissing:
+      Line = &Node->Device.Lines[Node->MissingLine];
+      DEBUG ((DEBUG_WARN, "AcpiPlatformDxe: no %a node: the line %a-%u, AIC %u, is not in the AIC-to-GIC table\n", Name, Line->Block, Line->Entry, Line->Aic));
+      break;
+  }
+}
+
 EFI_STATUS
 EFIAPI
 AcpiPlatformEntryPoint (
@@ -143,7 +255,9 @@ AcpiPlatformEntryPoint (
   UINTN                    TableKey;
   UINT64                   BootMpidr;
   ANS_NODE                 Ans;
-  CONST DSDT_ANS           *AnsInDsdt;
+  ANS_DEVICE               AnsDevice;
+  CONST DSDT_DEVICE        *Devices[MAX_DEVICE_COUNT];
+  UINTN                    DeviceCount;
 
   //
   // What the device tree says about the machine
@@ -197,9 +311,29 @@ AcpiPlatformEntryPoint (
     DEBUG ((DEBUG_INFO, "AcpiPlatformDxe: chip 0x%x, %u cores, no serial port: no DBG2\n", ChipId, (UINT32)CpuCount));
   }
 
+  //
+  // The devices, in the order the DSDT has them
+  //
+  DeviceCount = 0;
+
   FindAnsNode (BootInfo, &Ans);
   PrintAnsNode (&Ans);
-  AnsInDsdt = Ans.Outcome == AnsNodeMade ? &Ans.Node : NULL;
+  if (Ans.Outcome == AnsNodeMade) {
+    DescribeAns (&Ans.Node, &AnsDevice);
+    Devices[DeviceCount++] = &AnsDevice.Dsdt;
+  }
+
+  FindMtpNode (BootInfo, &mMtp);
+  PrintCoprocessorNode ("MTP0", &mMtp);
+  if (mMtp.Outcome == CoprocessorNodeMade) {
+    Devices[DeviceCount++] = &mMtp.Dsdt;
+  }
+
+  FindSmcNode (BootInfo, &mSmc);
+  PrintCoprocessorNode ("SMC0", &mSmc);
+  if (mSmc.Outcome == CoprocessorNodeMade) {
+    Devices[DeviceCount++] = &mSmc.Dsdt;
+  }
 
   //
   // Build. Tables lists them in the order they are installed in.
@@ -208,7 +342,7 @@ AcpiPlatformEntryPoint (
 
   Madt = AllocatePool (MadtSize (CpuCount));
   Dbg2 = WithDbg2 ? AllocatePool (Dbg2Size ()) : NULL;
-  Dsdt = AllocatePool (DsdtSize (Cpus, CpuCount, AnsInDsdt));
+  Dsdt = AllocatePool (DsdtSize (Cpus, CpuCount, Devices, DeviceCount));
 
   TableCount           = 0;
   Tables[TableCount++] = Madt;
@@ -244,7 +378,7 @@ AcpiPlatformEntryPoint (
       Dbg2Build (ChipId, CreatorRevision, BootInfo->UartBase, Dbg2);
     }
 
-    Status = DsdtBuild (ChipId, CreatorRevision, Cpus, CpuCount, AnsInDsdt, Dsdt);
+    Status = DsdtBuild (ChipId, CreatorRevision, Cpus, CpuCount, Devices, DeviceCount, Dsdt);
   }
 
   //

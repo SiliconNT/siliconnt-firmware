@@ -3,9 +3,10 @@
 #  GICv3, the virtual timer on INTID 27, PSCI over HVC.
 #
 #  GTDT and FADT are constants of this driver. MADT, DBG2 and DSDT are built at
-#  boot from what the Apple device tree says about the cores, the serial port and
-#  the internal disk controller, and from the table of interrupt numbers m1n1
-#  hands over. DBG2 only when the device tree names a serial port.
+#  boot from what the Apple device tree says about the cores, the serial port, the
+#  internal disk controller, the coprocessor of the keyboard and the trackpad (MTP)
+#  and the system management controller (SMC), and from the table of interrupt
+#  numbers m1n1 hands over. DBG2 only when the device tree names a serial port.
 #  This driver takes the place of MdeModulePkg/Universal/Acpi/AcpiPlatformDxe,
 #  which installs tables stored in the firmware volume as they are.
 #
@@ -24,8 +25,14 @@
   AcpiPlatformDxe.c
   AcpiTableBuilder.c
   AcpiTableBuilder.h
+  AmlWriter.c
+  AmlWriter.h
   AnsNode.c
   AnsNode.h
+  CoprocessorNode.c
+  CoprocessorNode.h
+  DeviceProperties.c
+  DeviceProperties.h
   Gtdt.c
   Fadt.c
   StaticTables.h
@@ -40,10 +47,12 @@
 
 [LibraryClasses]
   ArmLib
+  BaseLib
   BaseMemoryLib
   DebugLib
   MemoryAllocationLib
   PcdLib
+  PrintLib
   UefiBootServicesTableLib
   UefiDriverEntryPoint
   AppleDTLib

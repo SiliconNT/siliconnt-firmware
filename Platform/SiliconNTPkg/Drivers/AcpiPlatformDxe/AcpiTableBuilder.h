@@ -79,57 +79,82 @@ Dbg2Build (
   );
 
 /**
-  The internal disk controller as the DSDT describes it: four register ranges,
-  in this order in _CRS, and two GIC interrupt numbers (GSIVs), controller's
-  first. Its _DSD holds "nvme-secure-bar" when SecureBar is set, then
-  "sart-version" with SartVersion. AnsNode.h says where the values come from.
+  A property of a device: Package (2) { Key, value } in its _DSD. Which fields hold
+  the value depends on Kind:
+    DsdtInteger  Integer.
+    DsdtString   Strings is the string.
+    DsdtPackage  A package of StringCount strings and after them WordCount integers.
+                 The strings are at Strings one after the other, each ended by a
+                 zero, the integers at Words, 32 bits each, little-endian, not
+                 necessarily aligned.
+  The strings, Key too, are of the characters 0x01-0x7F.
+**/
+typedef enum {
+  DsdtInteger,
+  DsdtString,
+  DsdtPackage
+} DSDT_VALUE_KIND;
+
+typedef struct {
+  CONST CHAR8        *Key;
+  DSDT_VALUE_KIND    Kind;
+  UINT32             Integer;
+  CONST CHAR8        *Strings;
+  UINTN              StringCount;
+  CONST UINT8        *Words;
+  UINTN              WordCount;
+} DSDT_PROPERTY;
+
+// The most elements of a package, and so the most properties of a device
+#define DSDT_MAX_ELEMENTS  255
+
+/**
+  A device the DSDT describes: Name, four characters; its hardware ID; _UID 0; _CCA
+  0, its DMA is not coherent; its register ranges and after them its GIC interrupt
+  numbers (GSIVs) in _CRS, in this order; its properties in _DSD, in this order.
 **/
 typedef struct {
-  APPLE_MMIO_RANGE    Nvme;
-  APPLE_MMIO_RANGE    Coprocessor;
-  APPLE_MMIO_RANGE    Sart;
-  APPLE_MMIO_RANGE    Pmgr;           // the controller's register in the power manager
-  UINT32              NvmeGsiv;
-  UINT32              MailboxGsiv;
-  BOOLEAN             SecureBar;
-  UINT32              SartVersion;
-} DSDT_ANS;
-
-//
-// The hardware ID of the disk controller. SLNT is SiliconNT's own prefix and is
-// not registered with the UEFI Forum; SiliconNT docs/findings/0062.
-//
-#define DSDT_ANS_HID  "SLNT0001"
+  CONST CHAR8               *Name;
+  CONST CHAR8               *Hid;
+  CONST APPLE_MMIO_RANGE    *Memory;
+  UINTN                     MemoryCount;
+  CONST UINT32              *Gsiv;
+  UINTN                     GsivCount;
+  CONST DSDT_PROPERTY       *Properties;
+  UINTN                     PropertyCount;
+} DSDT_DEVICE;
 
 /**
   Differentiated System Description Table: a processor device for each core, in
-  the order of Cpus, then the disk controller if Ans is not NULL. The _UID of a
+  the order of Cpus, then the devices, in the order of Devices. The _UID of a
   processor device is the number of the core; its name is "CPU" and one character
-  for the number, 0-9 then A-Z. The disk controller is ANS0, _HID DSDT_ANS_HID.
+  for the number, 0-9 then A-Z.
 
-  With Ans NULL the table is the one the firmware built before it knew of the
-  disk controller, byte for byte.
-
-  @retval RETURN_SUCCESS            Table holds DsdtSize (Cpus, CpuCount, Ans) bytes.
+  @retval RETURN_SUCCESS            Table holds DsdtSize () bytes.
   @retval RETURN_INVALID_PARAMETER  A core number is 36 or above: there is no
-                                    name for it. Or a register range of Ans is
-                                    empty or reaches beyond the address space.
+                                    name for it. Or a register range of a device is
+                                    empty or reaches beyond the address space, or a
+                                    device has more than DSDT_MAX_ELEMENTS
+                                    properties, or one of them more than that many
+                                    elements. DsdtSize () is 0 then.
 **/
 UINTN
 DsdtSize (
-  IN CONST APPLE_CPU  *Cpus,
-  IN UINTN            CpuCount,
-  IN CONST DSDT_ANS   *Ans      OPTIONAL
+  IN CONST APPLE_CPU    *Cpus,
+  IN UINTN              CpuCount,
+  IN CONST DSDT_DEVICE  *CONST *Devices,
+  IN UINTN              DeviceCount
   );
 
 RETURN_STATUS
 DsdtBuild (
-  IN  UINT32                     OemRevision,
-  IN  UINT32                     CreatorRevision,
-  IN  CONST APPLE_CPU            *Cpus,
-  IN  UINTN                      CpuCount,
-  IN  CONST DSDT_ANS             *Ans      OPTIONAL,
-  OUT VOID                       *Table
+  IN  UINT32             OemRevision,
+  IN  UINT32             CreatorRevision,
+  IN  CONST APPLE_CPU    *Cpus,
+  IN  UINTN              CpuCount,
+  IN  CONST DSDT_DEVICE  *CONST *Devices,
+  IN  UINTN              DeviceCount,
+  OUT VOID               *Table
   );
 
 #endif // ACPI_TABLE_BUILDER_H_

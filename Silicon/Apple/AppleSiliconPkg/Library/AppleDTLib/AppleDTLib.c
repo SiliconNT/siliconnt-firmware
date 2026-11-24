@@ -1013,6 +1013,325 @@ RETURN_STATUS AppleGetAnsPmgr(IN CONST APPLE_BOOT_INFO *Info, IN CONST APPLE_ANS
     return RETURN_SUCCESS;
 }
 
+//
+// ========== SiliconNT: whole coprocessors ==========
+//
+// See AppleGetMtp() and AppleGetSmc() in AppleDTLib.h.
+//
+
+#define SEGMENT_RANGE_SIZE  32      // an entry of "segment-ranges": the physical address first, 64 bits
+
+// A node that belongs to the device, and the name of its resources
+typedef struct
+{
+    CONST CHAR8 *Path;
+    CONST CHAR8 *Block;
+} DEVICE_BLOCK;
+
+STATIC RETURN_STATUS ReadU64(IN dt_node_t *Node, IN CONST CHAR8 *Key, OUT UINT64 *Value)
+{
+    size_t Length = 0;
+    VOID   *Data  = dt_prop(Node, Key, &Length);
+
+    if(Data == NULL)
+    {
+        return RETURN_NOT_FOUND;
+    }
+    if(Length != sizeof(*Value))
+    {
+        return RETURN_INVALID_PARAMETER;
+    }
+    CopyMem(Value, Data, sizeof(*Value));
+    return RETURN_SUCCESS;
+}
+
+// Two ranges have a byte in common. A range that is empty or wraps around has none.
+STATIC BOOLEAN Overlap(IN CONST APPLE_MMIO_RANGE *A, IN CONST APPLE_MMIO_RANGE *B)
+{
+    return UsableRange(A) && UsableRange(B) && A->Base <= B->Base + (B->Size - 1) && B->Base <= A->Base + (A->Size - 1);
+}
+
+// How many entries of "reg" a child of /arm-io has; what is left after the last whole one does not count
+STATIC UINTN ArmIoRegCount(IN CONST ARM_IO *Io, IN dt_node_t *Node)
+{
+    size_t Length = 0;
+
+    return dt_prop(Node, "reg", &Length) == NULL ? 0 : Length / ((Io->BusCells + Io->SizeCells) * sizeof(UINT32));
+}
+
+// A range the power manager has registers in. The nodes: see FindPmgr().
+STATIC BOOLEAN InPowerManager(IN CONST APPLE_BOOT_INFO *Info, IN CONST ARM_IO *Io, IN CONST APPLE_MMIO_RANGE *Range)
+{
+    STATIC CONST CHAR8 *CONST Paths[] = { "/arm-io/pmgr", "/arm-io/pmgr-child" };
+    dt_node_t                 *Node;
+    APPLE_MMIO_RANGE          Entry;
+    UINTN                     Path;
+    UINTN                     Index;
+
+    for(Path = 0; Path < ARRAY_SIZE(Paths); Path++)
+    {
+        Node = dt_find(Info->DeviceTree, Paths[Path]);
+        if(Node == NULL)
+        {
+            continue;
+        }
+        for(Index = 0; Index < ArmIoRegCount(Io, Node); Index++)
+        {
+            if(!RETURN_ERROR(ReadArmIoReg(Io, Node, Index, &Entry.Base, &Entry.Size)) && Overlap(&Entry, Range))
+            {
+                return TRUE;
+            }
+        }
+    }
+    return FALSE;
+}
+
+STATIC RETURN_STATUS AddRange(IN CONST APPLE_BOOT_INFO *Info, IN CONST ARM_IO *Io, IN OUT APPLE_DEVICE *Device, IN CONST CHAR8 *Block, IN UINT32 Entry, IN CONST APPLE_MMIO_RANGE *Range)
+{
+    APPLE_DEVICE_RANGE *Added = &Device->Ranges[Device->RangeCount];
+
+    if(!UsableRange(Range))
+    {
+        return RETURN_INVALID_PARAMETER;
+    }
+    if(Device->RangeCount == APPLE_DEVICE_MAX_RANGES)
+    {
+        return RETURN_UNSUPPORTED;
+    }
+    Added->Block        = Block;
+    Added->Entry        = Entry;
+    Added->Range        = *Range;
+    Added->PowerManager = InPowerManager(Info, Io, Range);
+    Device->RangeCount++;
+    return RETURN_SUCCESS;
+}
+
+STATIC RETURN_STATUS AddRegisters(IN CONST APPLE_BOOT_INFO *Info, IN CONST ARM_IO *Io, IN CONST DEVICE_BLOCK *Block, IN dt_node_t *Node, IN OUT APPLE_DEVICE *Device)
+{
+    APPLE_MMIO_RANGE Range;
+    RETURN_STATUS    Status;
+    size_t           Length = 0;
+    UINTN            Count  = ArmIoRegCount(Io, Node);
+    UINT32           Index;
+
+    if(dt_prop(Node, "reg", &Length) == NULL)
+    {
+        return RETURN_NOT_FOUND;
+    }
+    if(Count == 0 || Length != Count * (Io->BusCells + Io->SizeCells) * sizeof(UINT32))
+    {
+        return RETURN_INVALID_PARAMETER;
+    }
+    for(Index = 0; Index < Count; Index++)
+    {
+        Status = ReadArmIoReg(Io, Node, Index, &Range.Base, &Range.Size);
+        if(!RETURN_ERROR(Status))
+        {
+            Status = AddRange(Info, Io, Device, Block->Block, Index, &Range);
+        }
+        if(RETURN_ERROR(Status))
+        {
+            return Status;
+        }
+    }
+    return RETURN_SUCCESS;
+}
+
+STATIC RETURN_STATUS AddLines(IN CONST DEVICE_BLOCK *Block, IN dt_node_t *Node, IN OUT APPLE_DEVICE *Device)
+{
+    CONST UINT8       *Values;
+    size_t            Length = 0;
+    UINT32            Index;
+    APPLE_DEVICE_LINE *Added;
+
+    Values = dt_prop(Node, "interrupts", &Length);
+    if(Values == NULL)
+    {
+        return RETURN_NOT_FOUND;
+    }
+    if(Length == 0 || Length % sizeof(UINT32) != 0)
+    {
+        return RETURN_INVALID_PARAMETER;
+    }
+    if(Length / sizeof(UINT32) > APPLE_DEVICE_MAX_LINES - Device->LineCount)
+    {
+        return RETURN_UNSUPPORTED;
+    }
+    for(Index = 0; Index < Length / sizeof(UINT32); Index++)
+    {
+        Added        = &Device->Lines[Device->LineCount++];
+        Added->Block = Block->Block;
+        Added->Entry = Index;
+        CopyMem(&Added->Aic, Values + Index * sizeof(UINT32), sizeof(UINT32));
+    }
+    return RETURN_SUCCESS;
+}
+
+// Everything but the SRAM. *Io is valid with RETURN_SUCCESS only.
+STATIC RETURN_STATUS ReadDevice(IN CONST APPLE_BOOT_INFO *Info, IN CONST DEVICE_BLOCK *Blocks, IN UINTN BlockCount, OUT ARM_IO *Io, OUT APPLE_DEVICE *Device)
+{
+    RETURN_STATUS Status;
+    dt_node_t     *Node;
+    UINTN         Index;
+    CONST CHAR8   *FailedNode;
+    CONST CHAR8   *FailedProperty = NULL;
+
+    ZeroMem(Device, sizeof(*Device));
+
+    FailedNode = "/arm-io";
+    Status     = GetArmIo(Info, Io);
+
+    for(Index = 0; Index < BlockCount && !RETURN_ERROR(Status); Index++)
+    {
+        FailedNode = Blocks[Index].Path;
+        Status     = dt_find(Info->DeviceTree, Blocks[Index].Path) != NULL ? RETURN_SUCCESS : RETURN_NOT_FOUND;
+    }
+    for(Index = 0; Index < BlockCount && !RETURN_ERROR(Status); Index++)
+    {
+        FailedNode     = Blocks[Index].Path;
+        Node           = dt_find(Info->DeviceTree, Blocks[Index].Path);
+        FailedProperty = "reg";
+        Status         = AddRegisters(Info, Io, &Blocks[Index], Node, Device);
+        if(!RETURN_ERROR(Status))
+        {
+            FailedProperty = "interrupts";
+            Status         = AddLines(&Blocks[Index], Node, Device);
+        }
+    }
+
+    if(RETURN_ERROR(Status))
+    {
+        ZeroMem(Device, sizeof(*Device));
+        Device->FailedNode     = FailedNode;
+        Device->FailedProperty = FailedProperty;
+    }
+    return Status;
+}
+
+// Looks for the first region that holds Address and does not overlap Dram
+typedef struct
+{
+    UINT64                 Address;
+    CONST APPLE_MMIO_RANGE *Dram;
+    APPLE_MMIO_RANGE       *Region;
+} CARVEOUT_WALK;
+
+// Called for the properties of /chosen/carveout-memory-map
+static int CarveoutWalkProperty(void *a, dt_node_t *Node, int Depth, const char *Key, void *Value, size_t Length)
+{
+    CARVEOUT_WALK    *Walk = a;
+    APPLE_MMIO_RANGE Region;
+
+    if(AsciiStrnCmp(Key, "region-id-", sizeof("region-id-") - 1) != 0 || Length != 2 * sizeof(UINT64))
+    {
+        return 0;
+    }
+    CopyMem(&Region.Base, Value, sizeof(UINT64));
+    CopyMem(&Region.Size, (UINT8 *)Value + sizeof(UINT64), sizeof(UINT64));
+    if(!UsableRange(&Region) || Walk->Address < Region.Base || Walk->Address - Region.Base >= Region.Size || Overlap(&Region, Walk->Dram))
+    {
+        return 0;
+    }
+    *Walk->Region = Region;
+    return 1;
+}
+
+STATIC RETURN_STATUS FindMtpSram(IN CONST APPLE_BOOT_INFO *Info, OUT APPLE_MMIO_RANGE *Sram)
+{
+    dt_node_t        *Chosen   = dt_find(Info->DeviceTree, "/chosen");
+    dt_node_t        *Carveout = dt_find(Info->DeviceTree, "/chosen/carveout-memory-map");
+    CONST UINT8      *Segments;
+    size_t           Length = 0;
+    APPLE_MMIO_RANGE Dram;
+    RETURN_STATUS    Status;
+    CARVEOUT_WALK    Walk = { 0, &Dram, Sram };
+
+    Segments = dt_prop(dt_find(Info->DeviceTree, "/arm-io/mtp"), "segment-ranges", &Length);
+    if(Segments == NULL || Carveout == NULL)
+    {
+        return RETURN_NOT_FOUND;
+    }
+    if(Length == 0 || Length % SEGMENT_RANGE_SIZE != 0)
+    {
+        return RETURN_INVALID_PARAMETER;
+    }
+    CopyMem(&Walk.Address, Segments, sizeof(Walk.Address));
+
+    Status = ReadU64(Chosen, "dram-base", &Dram.Base);
+    if(!RETURN_ERROR(Status))
+    {
+        Status = ReadU64(Chosen, "dram-size", &Dram.Size);
+    }
+    if(RETURN_ERROR(Status))
+    {
+        return Status;
+    }
+    return dt_parse(Carveout, -1, NULL, NULL, NULL, &CarveoutWalkProperty, &Walk) == 1 ? RETURN_SUCCESS : RETURN_NOT_FOUND;
+}
+
+RETURN_STATUS AppleGetMtp(IN CONST APPLE_BOOT_INFO *Info, OUT APPLE_DEVICE *Device)
+{
+    STATIC CONST DEVICE_BLOCK Blocks[] = {
+        { "/arm-io/mtp", "mtp" },
+        { "/arm-io/dart-mtp", "dart-mtp" },
+        { "/arm-io/dockchannel-mtp", "dockchannel-mtp" },
+    };
+    ARM_IO                    Io;
+    APPLE_MMIO_RANGE          Sram;
+    RETURN_STATUS             Status;
+
+    Status = ReadDevice(Info, Blocks, ARRAY_SIZE(Blocks), &Io, Device);
+    if(RETURN_ERROR(Status))
+    {
+        return Status;
+    }
+    Device->SramStatus = FindMtpSram(Info, &Sram);
+    if(!RETURN_ERROR(Device->SramStatus))
+    {
+        Device->SramStatus = AddRange(Info, &Io, Device, "mtp-sram", APPLE_DEVICE_NO_ENTRY, &Sram);
+    }
+    return RETURN_SUCCESS;
+}
+
+STATIC RETURN_STATUS FindSmcRegion(IN CONST APPLE_BOOT_INFO *Info, OUT APPLE_MMIO_RANGE *Region)
+{
+    dt_node_t     *Nub = dt_find(Info->DeviceTree, "/arm-io/smc/iop-smc-nub");
+    RETURN_STATUS Status;
+
+    if(Nub == NULL)
+    {
+        return RETURN_NOT_FOUND;
+    }
+    Status = ReadU64(Nub, "region-base", &Region->Base);
+    if(!RETURN_ERROR(Status))
+    {
+        Status = ReadU64(Nub, "region-size", &Region->Size);
+    }
+    return Status;
+}
+
+RETURN_STATUS AppleGetSmc(IN CONST APPLE_BOOT_INFO *Info, OUT APPLE_DEVICE *Device)
+{
+    STATIC CONST DEVICE_BLOCK Blocks[] = {
+        { "/arm-io/smc", "smc" },
+    };
+    ARM_IO                    Io;
+    APPLE_MMIO_RANGE          Region;
+    RETURN_STATUS             Status;
+
+    Status = ReadDevice(Info, Blocks, ARRAY_SIZE(Blocks), &Io, Device);
+    if(RETURN_ERROR(Status))
+    {
+        return Status;
+    }
+    Device->SramStatus = FindSmcRegion(Info, &Region);
+    if(!RETURN_ERROR(Device->SramStatus))
+    {
+        Device->SramStatus = AddRange(Info, &Io, Device, "smc-region", APPLE_DEVICE_NO_ENTRY, &Region);
+    }
+    return RETURN_SUCCESS;
+}
+
 RETURN_STATUS AppleGetMmioSpan(IN CONST APPLE_BOOT_INFO *Info, OUT UINT64 *Base, OUT UINT64 *Size)
 {
     ARM_IO        Io;

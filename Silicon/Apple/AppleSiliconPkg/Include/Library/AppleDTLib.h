@@ -408,4 +408,88 @@ RETURN_STATUS AppleGetAnsSartVersion(IN CONST APPLE_BOOT_INFO *Info, OUT UINT32 
 //
 RETURN_STATUS AppleGetAnsPmgr(IN CONST APPLE_BOOT_INFO *Info, IN CONST APPLE_ANS *Ans, OUT APPLE_MMIO_RANGE *Pmgr);
 
+//
+// SiliconNT: a coprocessor and the hardware that belongs to it, whole: every
+// register range and every interrupt line of one or more children of /arm-io, and
+// the coprocessor's SRAM (SiliconNT docs/findings/0095). Nothing is picked out,
+// merged or cut: which of it a driver uses is the driver's business.
+//
+// Ranges  The nodes one after the other, each in the order of its "reg", every
+//         entry taken through "ranges" of /arm-io like AppleGetUartBase(); the SRAM
+//         last. A range that overlaps an entry of "reg" of the power manager
+//         (/arm-io/pmgr, and /arm-io/pmgr-child where there is one) is marked: it
+//         is not the device's own.
+// Lines   AIC numbers, in the same order of nodes, each in the order of "interrupts".
+//
+// The strings point to constants of the library.
+//
+#define APPLE_DEVICE_MAX_RANGES  64
+#define APPLE_DEVICE_MAX_LINES   64
+#define APPLE_DEVICE_NO_ENTRY    MAX_UINT32
+
+typedef struct
+{
+    CONST CHAR8      *Block;        // the node it is from, or with APPLE_DEVICE_NO_ENTRY what it is
+    UINT32           Entry;         // which entry of "reg", from 0
+    APPLE_MMIO_RANGE Range;
+    BOOLEAN          PowerManager;  // overlaps the registers of the power manager
+} APPLE_DEVICE_RANGE;
+
+typedef struct
+{
+    CONST CHAR8 *Block;             // the node it is from
+    UINT32      Entry;              // which value of "interrupts", from 0
+    UINT32      Aic;
+} APPLE_DEVICE_LINE;
+
+typedef struct
+{
+    APPLE_DEVICE_RANGE Ranges[APPLE_DEVICE_MAX_RANGES];
+    UINTN              RangeCount;
+    APPLE_DEVICE_LINE  Lines[APPLE_DEVICE_MAX_LINES];
+    UINTN              LineCount;
+    RETURN_STATUS      SramStatus;      // RETURN_SUCCESS: the SRAM is the last of Ranges
+    CONST CHAR8        *FailedNode;     // what could not be read: the path of the node...
+    CONST CHAR8        *FailedProperty; // ...and the property; NULL: the node itself
+} APPLE_DEVICE;
+
+//
+// MTP, the coprocessor of the keyboard and the trackpad: /arm-io/mtp, the DART of
+// its memory accesses, /arm-io/dart-mtp, and its DockChannel,
+// /arm-io/dockchannel-mtp. The SRAM, "mtp-sram", is the region of
+// /chosen/carveout-memory-map ("region-id-...", base and size, two 64-bit values)
+// that holds the start of the first segment of MTP's firmware (the first 64-bit
+// value of "segment-ranges" of /arm-io/mtp, entries of 32 bytes) and does not
+// overlap the DRAM ("dram-base" and "dram-size" of /chosen).
+//
+// With any status but RETURN_SUCCESS all of *Device but FailedNode and
+// FailedProperty is 0 and the device is not described.
+//
+// RETURN_NOT_FOUND          One of the nodes, its "reg" or its "interrupts" is
+//                           missing; or what AppleGetUartBase() needs of /arm-io.
+// RETURN_INVALID_PARAMETER  A "reg" is not one or more whole entries, or one of
+//                           them is of size 0 or wraps around the address space;
+//                           an "interrupts" is not one or more 32-bit values.
+// RETURN_UNSUPPORTED        More ranges or lines than there is room for.
+//
+// Device->SramStatus when the device is read and the SRAM is not:
+// RETURN_NOT_FOUND          "segment-ranges", the memory map, a region as above,
+//                           "dram-base" or "dram-size" is missing.
+// RETURN_INVALID_PARAMETER  "segment-ranges", "dram-base" or "dram-size" is there
+//                           and of the wrong length.
+// RETURN_UNSUPPORTED        No room for it in Ranges.
+//
+RETURN_STATUS AppleGetMtp(IN CONST APPLE_BOOT_INFO *Info, OUT APPLE_DEVICE *Device);
+
+//
+// SMC, the system management controller: /arm-io/smc. The SRAM, "smc-region", is
+// what "region-base" and "region-size" of /arm-io/smc/iop-smc-nub say, 64-bit
+// values, an address of the CPU.
+//
+// The statuses are those of AppleGetMtp(). SramStatus: RETURN_NOT_FOUND without the
+// node or one of the two properties, RETURN_INVALID_PARAMETER when one is not 8
+// bytes long, the size is 0 or the region wraps around, RETURN_UNSUPPORTED as above.
+//
+RETURN_STATUS AppleGetSmc(IN CONST APPLE_BOOT_INFO *Info, OUT APPLE_DEVICE *Device);
+
 #endif /* APPLEDTLIB_H */

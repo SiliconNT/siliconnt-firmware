@@ -6,7 +6,8 @@
 #   MachineInfoTest.c   AppleGetCpus(), AppleGetUartBase() (also on the tree m1n1 hands over
 #                       without a host), AppleGetMmioSpan(), AppleGetChipId()
 #   AicToGicTest.c      AppleGetAicToGic(), AppleFindGicInterrupt()
-#   AnsTest.c           AppleGetAns()
+#   AnsTest.c           AppleGetAns(), AppleGetAnsSartVersion(), AppleGetAnsPmgr()
+#   CoprocessorTest.c   AppleGetMtp(), AppleGetSmc()
 # and of what Library/AppleUartSerialPortLib answers with a serial port and without:
 #   SerialPortLibTest.c
 # Needs: cc. Usage: ./run.sh
@@ -20,7 +21,7 @@ case "$(uname -m)" in
 esac
 out="$(mktemp)"
 trap 'rm -f "$out"' EXIT
-for test in BootRamdiskTest MachineInfoTest AicToGicTest AnsTest SerialPortLibTest; do
+for test in BootRamdiskTest MachineInfoTest AicToGicTest AnsTest CoprocessorTest SerialPortLibTest; do
   echo "== $test"
   # MDEPKG_NDEBUG: no DebugLib. ARM_LIB_H_: skip ArmLib.h, which AppleDTLib.c and
   # AppleUartSerialPortLib.c include and which refuses to compile for anything but

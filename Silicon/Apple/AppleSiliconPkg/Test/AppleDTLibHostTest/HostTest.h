@@ -77,7 +77,7 @@ VOID *EFIAPI ZeroMem(OUT VOID *Buffer, IN UINTN Length)
 // Device tree builder. A node is two counts, then its properties (32-byte
 // name, 32-bit length, value padded to 4 bytes), then its children.
 //
-STATIC UINT8  mTree[16384];
+STATIC UINT8  mTree[131072];
 STATIC UINTN  mUsed;
 
 STATIC VOID Node(IN UINT32 Properties, IN UINT32 Children)
@@ -183,6 +183,8 @@ STATIC int Verdict(VOID)
 //     /pmgr                 with a power manager: compatible, reg, ps-regs or
 //                           ps-groups, devices
 //     /pmgr-child           the same, when the machine has one
+//     ...                   the nodes of ArmIoNodes, as they are (CoprocessorTree.h)
+// and in /chosen the properties of ChosenProperties and the nodes of ChosenNodes.
 //
 typedef struct
 {
@@ -256,6 +258,48 @@ typedef enum
     TestUartLeftOut         // not in the tree at all
 } TEST_UART;
 
+//
+// A node and its properties but the name, as a table. A list of these is a list of
+// trees: each node is followed by its children, whose Depth is one more.
+//
+typedef struct
+{
+    CONST CHAR8 *Key;
+    CONST VOID  *Value;
+    UINT32      Length;
+} TEST_PROPERTY;
+
+typedef struct
+{
+    UINT32              Depth;
+    CONST CHAR8         *Name;
+    CONST TEST_PROPERTY *Properties;
+    UINTN               PropertyCount;
+} TEST_NODE;
+
+#define TEST_WORDS(Key, ...)  { Key, (CONST UINT32[]){ __VA_ARGS__ }, sizeof((CONST UINT32[]){ __VA_ARGS__ }) }
+#define TEST_TEXT(Key, Text)  { Key, Text, sizeof(Text) }
+#define TEST_EMPTY(Key)       { Key, "", 0 }
+#define TEST_NODE_OF(Depth, Name, Properties)  { Depth, Name, Properties, ARRAY_SIZE(Properties) }
+
+//
+// A change to these nodes: to the one called Node, or to /chosen with Node NULL.
+// With Key NULL the node and all below it is left out. Else the property is left
+// out (Value NULL), or it is there with this value, whether the table has it or not.
+//
+typedef struct
+{
+    CONST CHAR8 *Node;
+    CONST CHAR8 *Key;
+    CONST VOID  *Value;
+    UINT32      Length;
+} TEST_EDIT;
+
+#define EDIT_NO_NODE(Node)            { Node, NULL, NULL, 0 }
+#define EDIT_NO_PROPERTY(Node, Key)   { Node, Key, NULL, 0 }
+#define EDIT_WORDS(Node, Key, ...)    { Node, Key, (CONST UINT32[]){ __VA_ARGS__ }, sizeof((CONST UINT32[]){ __VA_ARGS__ }) }
+#define EDIT_BYTES(Node, Key, Bytes)  { Node, Key, Bytes, sizeof(Bytes) - 1 }   // a string literal, without its last zero
+
 typedef struct
 {
     UINT32         ChipId;
@@ -270,6 +314,14 @@ typedef struct
     TEST_UART      Uart;
     CONST TEST_PMGR *Pmgr;          // /arm-io/pmgr; NULL: none
     CONST TEST_PMGR *PmgrChild;     // /arm-io/pmgr-child; NULL: none
+    CONST TEST_NODE *ArmIoNodes;    // more children of /arm-io, and what is below them
+    UINTN           ArmIoNodeCount;
+    CONST TEST_PROPERTY *ChosenProperties;
+    UINTN           ChosenPropertyCount;
+    CONST TEST_NODE *ChosenNodes;
+    UINTN           ChosenNodeCount;
+    CONST TEST_EDIT *Edits;
+    UINTN           EditCount;
 } TEST_MACHINE;
 
 //
@@ -341,6 +393,103 @@ STATIC VOID BuildPmgr(IN CONST TEST_PMGR *Pmgr, IN CONST CHAR8 *NodeName)
     }
 }
 
+//
+// The edit of a property, or of the node itself with Key NULL; NULL when there is none
+//
+STATIC CONST TEST_EDIT *FindEdit(IN CONST TEST_MACHINE *Machine, IN CONST CHAR8 *NodeName, IN CONST CHAR8 *Key)
+{
+    UINTN Index;
+
+    for(Index = 0; Index < Machine->EditCount; Index++) {
+        CONST TEST_EDIT *Edit = &Machine->Edits[Index];
+
+        if((NodeName == NULL) != (Edit->Node == NULL) || (NodeName != NULL && strcmp(NodeName, Edit->Node) != 0)) {
+            continue;
+        }
+        if(Key == NULL ? Edit->Key == NULL : Edit->Key != NULL && strcmp(Key, Edit->Key) == 0) {
+            return Edit;
+        }
+    }
+    return NULL;
+}
+
+//
+// The properties of a node after the edits: how many, or (Emit) into the tree
+//
+STATIC UINT32 EditedProperties(IN CONST TEST_MACHINE *Machine, IN CONST CHAR8 *NodeName, IN CONST TEST_PROPERTY *Properties, IN UINTN Count, IN BOOLEAN Emit)
+{
+    UINT32          Total = 0;
+    UINTN           Index;
+    UINTN           Other;
+    CONST TEST_EDIT *Edit;
+
+    for(Index = 0; Index < Count; Index++) {
+        Edit = FindEdit(Machine, NodeName, Properties[Index].Key);
+        if(Edit != NULL && Edit->Value == NULL) {
+            continue;
+        }
+        Total++;
+        if(Emit) {
+            Prop(Properties[Index].Key, Edit != NULL ? Edit->Value : Properties[Index].Value, Edit != NULL ? Edit->Length : Properties[Index].Length);
+        }
+    }
+    for(Index = 0; Index < Machine->EditCount; Index++) {
+        Edit = &Machine->Edits[Index];
+        if(Edit->Value == NULL || FindEdit(Machine, NodeName, Edit->Key) != Edit) {
+            continue;
+        }
+        for(Other = 0; Other < Count && strcmp(Properties[Other].Key, Edit->Key) != 0; Other++) {
+        }
+        if(Other == Count) {
+            Total++;
+            if(Emit) {
+                Prop(Edit->Key, Edit->Value, Edit->Length);
+            }
+        }
+    }
+    return Total;
+}
+
+// Where the node at Index of Nodes and all below it ends
+STATIC UINTN EndOfNode(IN CONST TEST_NODE *Nodes, IN UINTN Count, IN UINTN Index)
+{
+    UINTN End = Index + 1;
+
+    while(End < Count && Nodes[End].Depth > Nodes[Index].Depth) {
+        End++;
+    }
+    return End;
+}
+
+// The nodes of [First, End) that are children of the same parent, after the edits
+STATIC UINT32 EditedNodeCount(IN CONST TEST_MACHINE *Machine, IN CONST TEST_NODE *Nodes, IN UINTN First, IN UINTN End)
+{
+    UINT32 Total = 0;
+
+    for(; First < End; First = EndOfNode(Nodes, End, First)) {
+        Total += FindEdit(Machine, Nodes[First].Name, NULL) == NULL ? 1 : 0;
+    }
+    return Total;
+}
+
+STATIC VOID BuildNodes(IN CONST TEST_MACHINE *Machine, IN CONST TEST_NODE *Nodes, IN UINTN First, IN UINTN End)
+{
+    UINTN Next;
+
+    for(; First < End; First = Next) {
+        CONST TEST_NODE *This = &Nodes[First];
+
+        Next = EndOfNode(Nodes, End, First);
+        if(FindEdit(Machine, This->Name, NULL) != NULL) {
+            continue;
+        }
+        Node(1 + EditedProperties(Machine, This->Name, This->Properties, This->PropertyCount, FALSE), EditedNodeCount(Machine, Nodes, First + 1, Next));
+        EditedProperties(Machine, This->Name, This->Properties, This->PropertyCount, TRUE);
+        Name(This->Name);
+        BuildNodes(Machine, Nodes, First + 1, Next);
+    }
+}
+
 STATIC UINT32 AnsNodeCount(IN CONST TEST_ANS *Ans)
 {
     return Ans == NULL ? 0 : ((Ans->Omit & OMIT_ANS) == 0 ? 1 : 0) + ((Ans->Omit & OMIT_SART) == 0 ? 1 : 0);
@@ -371,9 +520,11 @@ STATIC VOID BuildMachine(IN CONST TEST_MACHINE *Machine)
           Prop("nvme-secure-bar", "", 0);
       }
 
-      Node(2, Machine->AicToGic != NULL ? 1 : 0);
+      Node(2 + EditedProperties(Machine, NULL, Machine->ChosenProperties, Machine->ChosenPropertyCount, FALSE),
+           (Machine->AicToGic != NULL ? 1 : 0) + EditedNodeCount(Machine, Machine->ChosenNodes, 0, Machine->ChosenNodeCount));
       Name("chosen");
       Number("chip-id", Machine->ChipId);
+      EditedProperties(Machine, NULL, Machine->ChosenProperties, Machine->ChosenPropertyCount, TRUE);
       if(Machine->AicToGic != NULL) {
           // The table at the start of guest memory, as the loader writes it
           Table[0] = APPLE_AIC_TO_GIC_VERSION;
@@ -385,6 +536,7 @@ STATIC VOID BuildMachine(IN CONST TEST_MACHINE *Machine)
           Name("memory-map");
           Prop("AICToGIC", Entry, sizeof(Entry));
       }
+      BuildNodes(Machine, Machine->ChosenNodes, 0, Machine->ChosenNodeCount);
 
       Node(3, (UINT32)Machine->CpuCount + 1);
       Number("#address-cells", 1);
@@ -411,7 +563,7 @@ STATIC VOID BuildMachine(IN CONST TEST_MACHINE *Machine)
         Number("reg", 0x7ff);
 
       Node(4, 1 + (Machine->Uart != TestUartLeftOut ? 1 : 0) + (Machine->Pmgr != NULL ? 1 : 0) + (Machine->PmgrChild != NULL ? 1 : 0) +
-              AnsNodeCount(Machine->Ans));
+              AnsNodeCount(Machine->Ans) + EditedNodeCount(Machine, Machine->ArmIoNodes, 0, Machine->ArmIoNodeCount));
       Number("#address-cells", 2);
       Name("arm-io");
       Prop("ranges", Machine->RangeCount != 0 ? (CONST VOID *)Machine->Ranges : "", (UINT32)(Machine->RangeCount * sizeof(Machine->Ranges[0])));
@@ -437,6 +589,7 @@ STATIC VOID BuildMachine(IN CONST TEST_MACHINE *Machine)
         if(Machine->PmgrChild != NULL) {
             BuildPmgr(Machine->PmgrChild, "pmgr-child");
         }
+        BuildNodes(Machine, Machine->ArmIoNodes, 0, Machine->ArmIoNodeCount);
 }
 
 //

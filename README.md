@@ -28,6 +28,7 @@ What differs between machines is read from the Apple device tree at boot, not bu
 | Address of the serial port | `/arm-io/uart0` |
 | Range of the device registers | `ranges` of `/arm-io` |
 | Number of the chip (the OEM revision of the ACPI tables) | `chip-id` of `/chosen` |
+| The devices the DSDT describes | `/arm-io/ans` and `/arm-io/sart-ans`, the internal disk; `/arm-io/mtp`, `/arm-io/dart-mtp` and `/arm-io/dockchannel-mtp`, the keyboard and the trackpad; `/arm-io/smc` |
 | Memory, framebuffer | the boot arguments |
 
 MADT, DSDT and, with a serial port, DBG2 are built from these at boot; GTDT and FADT are the same everywhere.
